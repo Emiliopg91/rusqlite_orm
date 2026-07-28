@@ -1,0 +1,16 @@
+[package]
+name = "rusqlite_orm_macros"
+version = "0.1.1"
+edition = "2024"
+description = "Macros for rusqlite_orm"
+repository = "https://github.com/Emiliopg91/rusqlite_orm/macros"
+license = "MIT"
+categories = ["database"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }

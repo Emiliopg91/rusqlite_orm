@@ -1,0 +1,17 @@
+[package]
+name = "rusqlite_orm"
+version = "0.1.1"
+edition = "2024"
+description = "ORM for rusqlite"
+repository = "https://github.com/Emiliopg91/rusqlite_orm/orm"
+readme = "README.md"
+license = "MIT"
+categories = ["database"]
+
+[dependencies]
+rusqlite = "^0"
+thiserror = "^2"
+log = "^0"
+
+[lib]
+crate-type = ["staticlib", "cdylib", "rlib"]
