@@ -132,12 +132,12 @@ pub fn dlls(input: TokenStream) -> TokenStream {
     .into()
 }
 
-#[proc_macro_derive(Entity, attributes(entity, id, no_column, column, indexes))]
+#[proc_macro_derive(Entity, attributes(entity, primary_key, dont_map, column, indexes))]
 pub fn derive_entity(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = &input.ident;
     let mut comparable = false;
-    let mut hasheable = false;
+    let mut hashable = false;
 
     fn build_condition(
         id_fields: &[&FieldInfo],
@@ -188,13 +188,13 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                 let lit: syn::LitBool = meta.value()?.parse()?;
                 comparable = lit.value();
                 Ok(())
-            } else if meta.path.is_ident("hasheable") {
+            } else if meta.path.is_ident("hashable") {
                 let lit: syn::LitBool = meta.value()?.parse()?;
-                hasheable = lit.value();
+                hashable = lit.value();
                 Ok(())
             } else {
                 Err(meta.error(
-                    "Attribute `entity` not recognized, expected `table = \"...\"`, `comparable = true|false` or `hasheable = true|false`",
+                    "Attribute `entity` not recognized, expected `table = \"...\"`, `comparable = true|false` or `hashable = true|false`",
                 ))
             }
         });
@@ -223,21 +223,24 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         }
     };
 
-    let mut has_no_column = false;
+    let mut has_dont_map = false;
     let mut has_id = false;
     let mut fields: Vec<FieldInfo> = Vec::new();
 
     for f in named_fields.iter() {
-        let no_column = f.attrs.iter().any(|attr| attr.path().is_ident("no_column"));
-        if no_column {
-            has_no_column = true;
+        let dont_map = f.attrs.iter().any(|attr| attr.path().is_ident("dont_map"));
+        if dont_map {
+            has_dont_map = true;
             continue;
         }
 
         let ident = f.ident.clone().unwrap();
         let name = ident.to_string();
         let const_ident = format_ident!("{}", name.to_uppercase());
-        let is_id = f.attrs.iter().any(|attr| attr.path().is_ident("id"));
+        let is_id = f
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("primary_key"));
         has_id = has_id || is_id;
         let mut column_name = name.to_lowercase();
 
@@ -278,8 +281,8 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
                 .to_compile_error()
                 .into();
         }
-        if hasheable {
-            return syn::Error::new_spanned(input, "hasheable requires id columns")
+        if hashable {
+            return syn::Error::new_spanned(input, "hashable requires id columns")
                 .to_compile_error()
                 .into();
         }
@@ -411,12 +414,17 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         }
     };
 
+    let table_name_constant = quote! {
+        pub const TABLE: rusqlite_orm::dao::helpers::types::table_name::TableName<super::#struct_name> =
+            rusqlite_orm::dao::helpers::types::table_name::TableName::<super::#struct_name>::new(#table_name);
+    };
+
     let field_constants = fields.iter().map(|f| {
         let const_ident = &f.const_ident;
         let name = &f.column;
         quote! {
-            pub const #const_ident: rusqlite_orm::dao::helpers::types::column_name::ColumnName<#struct_name> =
-                rusqlite_orm::dao::helpers::types::column_name::ColumnName::<#struct_name>::new(#name);
+            pub const #const_ident: rusqlite_orm::dao::helpers::types::column_name::ColumnName<super::super::#struct_name> =
+                rusqlite_orm::dao::helpers::types::column_name::ColumnName::<super::super::#struct_name>::new(#name);
         }
     });
 
@@ -435,7 +443,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         }
     });
 
-    let default_spread = if has_no_column {
+    let default_spread = if has_dont_map {
         quote! { , ..Default::default() }
     } else {
         quote! {}
@@ -447,7 +455,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     });
 
     let id_fields: Vec<&FieldInfo> = fields.iter().filter(|f| f.is_id).collect();
-    let instance_operations = if id_fields.is_empty() {
+    let primary_key_operation = if id_fields.is_empty() {
         quote! {}
     } else {
         let by_id_params: Vec<TokenStream2> = id_fields
@@ -574,7 +582,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         }
     };
 
-    let hashseable_impl = if !hasheable {
+    let hashable_impl = if !hashable {
         quote! {}
     } else {
         let hashes = id_fields
@@ -598,14 +606,14 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 
     let expanded = quote! {
         pub mod entity {
+            #table_name_constant
             pub mod columns {
-                use super::super::*;
                 #(#field_constants)*
             }
         }
 
         impl rusqlite_orm::dao::Entity for #struct_name {
-            const TABLE_NAME: &'static str = #table_name;
+            const TABLE_NAME: &'static rusqlite_orm::dao::helpers::types::table_name::TableName<Self> = &self::entity::TABLE;
             const FIELDS: &'static [rusqlite_orm::dao::helpers::types::column_name::ColumnName<Self>] =
                 &[ #(#field_name_list),* ];
 
@@ -626,9 +634,9 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 
         #comparable_impl
 
-        #hashseable_impl
+        #hashable_impl
 
-        #instance_operations
+        #primary_key_operation
 
         #indexes_impl
     };

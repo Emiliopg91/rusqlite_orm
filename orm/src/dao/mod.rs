@@ -2,15 +2,18 @@
 
 pub mod helpers;
 
-use crate::dao::helpers::querys::{
-    QueryBuilder, delete::DeleteBuilder, insert::InsertBuilder, select::SelectBuilder,
-    update::UpdateBuilder,
+use crate::dao::helpers::{
+    querys::{
+        QueryBuilder, delete::DeleteBuilder, insert::InsertBuilder, select::SelectBuilder,
+        update::UpdateBuilder,
+    },
+    types::table_name::TableName,
 };
 
 use self::helpers::types::{column_name::ColumnName, value::Value};
 
 pub trait Entity: Sized + 'static {
-    const TABLE_NAME: &'static str;
+    const TABLE_NAME: &'static TableName<Self>;
     const FIELDS: &'static [ColumnName<Self>];
 
     fn map_from_row(row: &crate::rusqlite::Row) -> Result<Self, crate::rusqlite::Error>;
