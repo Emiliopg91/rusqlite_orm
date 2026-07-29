@@ -82,8 +82,10 @@ impl Database {
                     .map_err(DatabaseError::SchemaCreation)?;
             }
 
-            if !updates.is_empty() {
-                debug!("Database updated succesfully")
+            if let Some(max_version) = updates.iter().map(|u| u.version).max() {
+                tx.pragma_update(None, "user_version", max_version)
+                    .map_err(DatabaseError::SchemaCreation)?;
+                debug!("Database updated succesfully");
             }
 
             Ok(())
