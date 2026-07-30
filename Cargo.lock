@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "rusqlite_orm"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "log",
  "rusqlite",
