@@ -57,7 +57,7 @@ where
         let deleted = tx
             .execute(&sentence, params_from_iter(params))
             .map_err(DatabaseError::Delete)?;
-        Self::log_query_ending(deleted, false);
+        Self::log_query_ending(deleted, "Deleted");
 
         Ok(deleted)
     }

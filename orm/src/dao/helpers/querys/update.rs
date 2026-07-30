@@ -79,7 +79,7 @@ where
         let updated = tx
             .execute(&sentence, params_from_iter(params))
             .map_err(DatabaseError::Update)?;
-        Self::log_query_ending(updated, false);
+        Self::log_query_ending(updated, "Updated");
 
         Ok(updated)
     }

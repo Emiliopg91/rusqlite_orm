@@ -76,7 +76,7 @@ where
         let inserted = tx
             .execute(&sentence, params_from_iter(values.iter()))
             .map_err(DatabaseError::Insert)?;
-        Self::log_query_ending(inserted, false);
+        Self::log_query_ending(inserted, "Inserted");
 
         Ok(inserted)
     }

@@ -101,7 +101,7 @@ where
         let res: Vec<T> = rows
             .collect::<Result<Vec<T>, crate::rusqlite::Error>>()
             .map_err(DatabaseError::Select)?;
-        Self::log_query_ending(res.len(), true);
+        Self::log_query_ending(res.len(), "Selected");
 
         Ok(res)
     }
@@ -122,5 +122,31 @@ where
         let mut db = DATABASE_INST.lock().unwrap();
         let res = db.run_in_tx(|tx| self.fetch_in_tx(tx))?;
         Ok(res.into_iter().next())
+    }
+
+    pub fn count_in_tx(
+        &self,
+        tx: &crate::rusqlite::Transaction,
+    ) -> crate::database::errors::Result<i64> {
+        let mut sentence = format!("SELECT COUNT(*) FROM {}", T::TABLE_NAME);
+
+        let mut params = Vec::new();
+        if let Some(condition) = &self.condition {
+            sentence.push_str(&format!(" WHERE {}", condition.to_sql()));
+            params = condition.clone().into_params();
+        }
+
+        Self::log_query_start(&sentence, &params);
+        let total: i64 = tx
+            .query_row(&sentence, params_from_iter(params), |row| row.get(0))
+            .map_err(DatabaseError::Select)?;
+        Self::log_query_ending(1, "Counted ");
+
+        Ok(total)
+    }
+
+    pub fn count(&self) -> crate::database::errors::Result<i64> {
+        let mut db = DATABASE_INST.lock().unwrap();
+        db.run_in_tx(|tx| self.count_in_tx(tx))
     }
 }

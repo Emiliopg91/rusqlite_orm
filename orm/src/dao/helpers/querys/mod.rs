@@ -24,12 +24,8 @@ pub trait QueryBuilder<T> {
         debug!("Running statement \"{}\"", sentence,);
     }
 
-    fn log_query_ending(rows: usize, is_fetch: bool) {
+    fn log_query_ending(rows: usize, action: &str) {
         let s = if rows > 1 { "s" } else { "" };
-        if is_fetch {
-            debug!("Fetched {} row{}", rows, s);
-        } else {
-            debug!("Affected {} row{}", rows, s);
-        }
+        debug!("{} {} row{}", action, rows, s);
     }
 }
