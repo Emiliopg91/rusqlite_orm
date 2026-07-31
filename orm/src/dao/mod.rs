@@ -16,22 +16,27 @@ pub trait Entity: Sized + 'static {
     const TABLE_NAME: &'static TableName<Self>;
     const FIELDS: &'static [ColumnName<Self>];
 
-    fn delete() -> DeleteBuilder<Self> {
+    fn get_values(&self) -> Vec<Value>;
+    fn map_from_row(row: &crate::rusqlite::Row) -> Result<Self, crate::rusqlite::Error>;
+}
+
+pub trait Repository<T>: Sized + 'static
+where
+    T: Entity,
+{
+    fn delete() -> DeleteBuilder<T> {
         DeleteBuilder::new()
     }
 
-    fn insert() -> InsertBuilder<Self> {
+    fn insert() -> InsertBuilder<T> {
         InsertBuilder::new()
     }
 
-    fn select() -> SelectBuilder<Self> {
-        SelectBuilder::<Self>::new()
+    fn select() -> SelectBuilder<T> {
+        SelectBuilder::new()
     }
 
-    fn update() -> UpdateBuilder<Self> {
+    fn update() -> UpdateBuilder<T> {
         UpdateBuilder::new()
     }
-
-    fn get_values(&self) -> Vec<Value>;
-    fn map_from_row(row: &crate::rusqlite::Row) -> Result<Self, crate::rusqlite::Error>;
 }

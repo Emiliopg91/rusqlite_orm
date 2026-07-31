@@ -20,6 +20,7 @@ where
     condition: Option<Where<T>>,
     order: Vec<OrderBy<T>>,
     limit: Option<u32>,
+    offset: Option<u32>,
     _marker: PhantomData<T>,
 }
 
@@ -32,6 +33,7 @@ where
             condition: None,
             order: Vec::new(),
             limit: None,
+            offset: None,
             _marker: PhantomData,
         }
     }
@@ -53,6 +55,11 @@ where
 
     pub fn limit(mut self, limit: u32) -> Self {
         self.limit = Some(limit);
+        self
+    }
+
+    pub fn offset(mut self, offset: u32) -> Self {
+        self.offset = Some(offset);
         self
     }
 
@@ -90,6 +97,10 @@ where
 
         if let Some(limit) = self.limit {
             sentence.push_str(&format!(" LIMIT {}", limit));
+        }
+
+        if let Some(offset) = self.offset {
+            sentence.push_str(&format!(" OFFSET {}", offset));
         }
 
         Self::log_query_start(&sentence, &params);

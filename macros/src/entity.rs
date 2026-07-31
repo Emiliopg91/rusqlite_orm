@@ -22,7 +22,7 @@ struct EntityAttrs {
 
 struct ParsedFields {
     fields: Vec<FieldInfo>,
-    has_dont_map: bool,
+    has_trasient: bool,
     has_id: bool,
 }
 
@@ -84,14 +84,14 @@ fn get_named_fields(input: &DeriveInput) -> syn::Result<&Punctuated<syn::Field, 
 }
 
 fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<ParsedFields> {
-    let mut has_dont_map = false;
+    let mut has_trasient = false;
     let mut has_id = false;
     let mut fields: Vec<FieldInfo> = Vec::new();
 
     for f in named_fields.iter() {
-        let dont_map = f.attrs.iter().any(|attr| attr.path().is_ident("dont_map"));
-        if dont_map {
-            has_dont_map = true;
+        let trasient = f.attrs.iter().any(|attr| attr.path().is_ident("trasient"));
+        if trasient {
+            has_trasient = true;
             continue;
         }
 
@@ -134,7 +134,7 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
 
     Ok(ParsedFields {
         fields,
-        has_dont_map,
+        has_trasient,
         has_id,
     })
 }
@@ -286,7 +286,7 @@ fn build_entity_module(
 fn build_entity_trait_impl(
     struct_name: &syn::Ident,
     fields: &[FieldInfo],
-    has_dont_map: bool,
+    has_trasient: bool,
 ) -> TokenStream2 {
     let field_name_list = fields.iter().map(|f| {
         let ident = &f.const_ident;
@@ -299,7 +299,7 @@ fn build_entity_trait_impl(
         quote! { #ident: row.get::<_, #ty>(#idx)? }
     });
 
-    let default_spread = if has_dont_map {
+    let default_spread = if has_trasient {
         quote! { , ..Default::default() }
     } else {
         quote! {}
@@ -341,16 +341,6 @@ fn build_primary_key_impl(
         return quote! {};
     }
 
-    let by_id_params: Vec<TokenStream2> = id_fields.iter().map(|f| param_type(f)).collect();
-
-    let id_condition = build_condition(id_fields, |f| {
-        let ident = &f.ident;
-        quote! { #ident.into() }
-    });
-
-    let id_condition_idents = id_fields.iter().map(|f| f.ident.clone());
-    let id_condition_names = quote! { #(#id_condition_idents),* };
-
     let update_delete_condition = build_condition(id_fields, |f| {
         let ident = &f.ident;
         quote! { self.#ident.clone().into() }
@@ -368,41 +358,9 @@ fn build_primary_key_impl(
         })
         .collect();
 
+    let repo_ident = format_ident!("{}Repository", struct_name);
+
     quote! {
-            pub fn exists(
-                #(#by_id_params),*
-            ) -> rusqlite_orm::database::errors::Result<bool> {
-                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Self::exists_in_tx(tx, #id_condition_names))
-            }
-            pub fn exists_in_tx(
-                tx: &rusqlite_orm::rusqlite::Transaction,
-                #(#by_id_params),*
-            ) -> rusqlite_orm::database::errors::Result<bool> {
-                let count = <#struct_name as rusqlite_orm::dao::Entity>::select()
-                    .where_(#id_condition)
-                    .count_in_tx(tx)?;
-                Ok(count>0)
-            }
-
-            pub fn select_by_id(
-                #(#by_id_params),*
-            ) -> rusqlite_orm::database::errors::Result<Option<Self>> {
-                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Self::select_by_id_in_tx(tx, #id_condition_names))
-            }
-
-            pub fn select_by_id_in_tx(
-                tx: &rusqlite_orm::rusqlite::Transaction,
-                #(#by_id_params),*
-            ) -> rusqlite_orm::database::errors::Result<Option<Self>> {
-                Ok(<#struct_name as rusqlite_orm::dao::Entity>::select()
-                    .where_(#id_condition)
-                    .fetch_in_tx(tx)?
-                    .into_iter()
-                    .next())
-            }
-
             pub fn update_by_id(&self) -> rusqlite_orm::database::errors::Result<()> {
                 let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
                 db.run_in_tx(|tx| self.update_by_id_in_tx(tx))
@@ -412,7 +370,7 @@ fn build_primary_key_impl(
                 &self,
                 tx: &rusqlite_orm::rusqlite::Transaction,
             ) -> rusqlite_orm::database::errors::Result<()> {
-                <#struct_name as rusqlite_orm::dao::Entity>::update()
+                <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::update()
                     #(#update_sets)*
                     .where_(#update_delete_condition)
                     .execute_in_tx(tx)?;
@@ -428,10 +386,65 @@ fn build_primary_key_impl(
                 &self,
                 tx: &rusqlite_orm::rusqlite::Transaction,
             ) -> rusqlite_orm::database::errors::Result<()> {
-                <#struct_name as rusqlite_orm::dao::Entity>::delete()
+                <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::delete()
                     .where_(#update_delete_condition)
                     .execute_in_tx(tx)?;
                 Ok(())
+            }
+    }
+}
+
+fn repository_build_primary_key_impl(
+    struct_name: &syn::Ident,
+    id_fields: &[&FieldInfo],
+) -> TokenStream2 {
+    if id_fields.is_empty() {
+        return quote! {};
+    }
+
+    let by_id_params: Vec<TokenStream2> = id_fields.iter().map(|f| param_type(f)).collect();
+
+    let id_condition = build_condition(id_fields, |f| {
+        let ident = &f.ident;
+        quote! { #ident.into() }
+    });
+
+    let id_condition_idents = id_fields.iter().map(|f| f.ident.clone());
+    let id_condition_names = quote! { #(#id_condition_idents),* };
+
+    quote! {
+            pub fn exists(
+                #(#by_id_params),*
+            ) -> rusqlite_orm::database::errors::Result<bool> {
+                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
+                db.run_in_tx(|tx| Self::exists_in_tx(tx, #id_condition_names))
+            }
+            pub fn exists_in_tx(
+                tx: &rusqlite_orm::rusqlite::Transaction,
+                #(#by_id_params),*
+            ) -> rusqlite_orm::database::errors::Result<bool> {
+                let count = <Self as rusqlite_orm::dao::Repository<#struct_name>>::select()
+                    .where_(#id_condition)
+                    .count_in_tx(tx)?;
+                Ok(count>0)
+            }
+
+            pub fn select_by_id(
+                #(#by_id_params),*
+            ) -> rusqlite_orm::database::errors::Result<Option<#struct_name>> {
+                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
+                db.run_in_tx(|tx| Self::select_by_id_in_tx(tx, #id_condition_names))
+            }
+
+            pub fn select_by_id_in_tx(
+                tx: &rusqlite_orm::rusqlite::Transaction,
+                #(#by_id_params),*
+            ) -> rusqlite_orm::database::errors::Result<Option<#struct_name>> {
+                Ok(<Self as rusqlite_orm::dao::Repository<#struct_name>>::select()
+                    .where_(#id_condition)
+                    .fetch_in_tx(tx)?
+                    .into_iter()
+                    .next())
             }
     }
 }
@@ -465,9 +478,11 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[Vec<&FieldInfo>]) -> 
             quote! { #ident.into() }
         });
 
+        let repo_ident = format_ident!("{}Repository", struct_name);
+
         quote! {
-            pub fn #fn_name(#(#select_params),*, order_by: Option<&[rusqlite_orm::dao::helpers::types::order_by::OrderBy<Self>]>) -> rusqlite_orm::database::errors::Result<Vec<Self>> {
-                let mut builder = <#struct_name as rusqlite_orm::dao::Entity>::select()
+            pub fn #fn_name(#(#select_params),*, order_by: Option<&[rusqlite_orm::dao::helpers::types::order_by::OrderBy<#struct_name>]>) -> rusqlite_orm::database::errors::Result<Vec<#struct_name>> {
+                let mut builder = <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#condition);
                 if let Some(order_by) = order_by{
                     for ob in order_by {
@@ -476,8 +491,8 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[Vec<&FieldInfo>]) -> 
                 }
                 builder.fetch()
             }
-            pub fn #fn_name_tx(tx: &rusqlite_orm::rusqlite::Transaction, #(#select_params),*, order_by: Option<&[rusqlite_orm::dao::helpers::types::order_by::OrderBy<Self>]>) -> rusqlite_orm::database::errors::Result<Vec<Self>> {
-                let mut builder = <#struct_name as rusqlite_orm::dao::Entity>::select()
+            pub fn #fn_name_tx(tx: &rusqlite_orm::rusqlite::Transaction, #(#select_params),*, order_by: Option<&[rusqlite_orm::dao::helpers::types::order_by::OrderBy<#struct_name>]>) -> rusqlite_orm::database::errors::Result<Vec<#struct_name>> {
+                let mut builder = <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#condition);
                 if let Some(order_by) = order_by{
                     for ob in order_by {
@@ -487,11 +502,11 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[Vec<&FieldInfo>]) -> 
                 builder.fetch_in_tx(tx)
             }
             pub fn #fn_name_count(#(#select_params),*) -> rusqlite_orm::database::errors::Result<i64> {
-                <#struct_name as rusqlite_orm::dao::Entity>::select()
+                <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#condition).count()
             }
             pub fn #fn_name_count_tx(tx: &rusqlite_orm::rusqlite::Transaction, #(#select_params),*) -> rusqlite_orm::database::errors::Result<i64> {
-                <#struct_name as rusqlite_orm::dao::Entity>::select()
+                <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#condition).count_in_tx(tx)
             }
         }
@@ -574,9 +589,11 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     let named_fields = bail_on_err!(get_named_fields(&input));
     let ParsedFields {
         fields,
-        has_dont_map,
+        has_trasient,
         has_id,
     } = bail_on_err!(parse_fields(named_fields));
+
+    let repo_ident = format_ident!("{}Repository", struct_name);
 
     bail_on_err!(validate_id_requirements(
         &input,
@@ -589,8 +606,10 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     let id_fields: Vec<&FieldInfo> = fields.iter().filter(|f| f.is_id).collect();
 
     let entity_module = build_entity_module(struct_name, &entity_attrs.table_name, &fields);
-    let entity_trait_impl = build_entity_trait_impl(struct_name, &fields, has_dont_map);
+    let entity_trait_impl = build_entity_trait_impl(struct_name, &fields, has_trasient);
     let primary_key_operation = build_primary_key_impl(struct_name, &fields, &id_fields);
+    let repository_primary_key_operation =
+        repository_build_primary_key_impl(struct_name, &id_fields);
     let indexes_impl = build_indexes_impl(struct_name, &indexes);
     let comparable_impl = build_comparable_impl(struct_name, entity_attrs.comparable, &id_fields);
     let hashable_impl = build_hashable_impl(struct_name, entity_attrs.hashable, &id_fields);
@@ -605,8 +624,14 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         #hashable_impl
 
         impl #struct_name {
-            #indexes_impl
             #primary_key_operation
+        }
+
+        pub struct #repo_ident;
+        impl rusqlite_orm::dao::Repository<#struct_name> for #repo_ident{}
+        impl #repo_ident{
+            #indexes_impl
+            #repository_primary_key_operation
         }
     };
 
