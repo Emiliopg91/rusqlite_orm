@@ -34,11 +34,12 @@ pub struct User {
 
 **Field-level attributes**
 
-| Attribute                 | Effect                                                                                                                                                                                                                                             |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `#[primary_key]`          | Marks the field as (part of) the primary key. Any struct with one or more `#[primary_key]` fields gets `select_by_id`, `exists`, `update_by_id`, `delete_by_id` (and `_in_tx` variants). Multiple `#[primary_key]` fields are combined with `AND`. |
-| `#[column(name = "...")]` | Overrides the column name (defaults to the field name, lowercased).                                                                                                                                                                                |
-| `#[trasient]`             | Excludes the field from `INSERT`/`SELECT` column lists entirely. When mapping a row back into the struct, this field is filled in via `Default::default()` — the struct must implement `Default`.                                                  |
+| Attribute                                            | Effect                                                                                                                                                                                                                                             |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `#[primary_key]`                                     | Marks the field as (part of) the primary key. Any struct with one or more `#[primary_key]` fields gets `select_by_id`, `exists`, `update_by_id`, `delete_by_id` (and `_in_tx` variants). Multiple `#[primary_key]` fields are combined with `AND`. |
+| `#[column(name = "...")]`                            | Overrides the column name (defaults to the field name, lowercased).                                                                                                                                                                                |
+| `#[trasient]`                                        | Excludes the field from `INSERT`/`SELECT` column lists entirely. When mapping a row back into the struct, this field is filled in via `Default::default()` — the struct must implement `Default`.                                                  |
+| `#[relationship((local_field, remote_column), ...)]` | Declares the field as a related entity rather than a persisted column (see [Relationships](#relationships) below).                                                                                                                                 |
 
 **Generated code**
 
@@ -48,6 +49,70 @@ pub struct User {
 - `exists` / `select_by_id` / `update_by_id` / `delete_by_id` (+ `_in_tx`) when the struct has `#[primary_key]` field(s).
 - `select_by_<fields>` / `count_by_<fields>` (+ `_in_tx`) for every group declared in `#[indexes(...)]`.
 - `PartialEq`/`Eq` and/or `Hash` impls when `comparable`/`hashable` are enabled.
+- `fetch_<field>_relationship` / `fetch_<field>_relationship_in_tx` for every field annotated with `#[relationship(...)]`.
+
+## Relationships
+
+A field annotated with `#[relationship(...)]` doesn't map to a column in `TABLE_NAME`. Instead, it holds a related entity (or collection of entities) that can be lazily loaded from the database on demand.
+
+```rust
+#[derive(Entity, Debug, Clone, Default)]
+#[entity(table = "posts")]
+pub struct Post {
+    #[primary_key]
+    pub id: i64,
+    pub user_id: i64,
+    pub title: String,
+
+    #[relationship((user_id, super::user::entity::columns::ID))]
+    pub author: Option<User>,
+
+    #[relationship((id, super::comment::entity::columns::POST_ID))]
+    pub comments: Vec<Comment>,
+}
+```
+
+**Field type determines cardinality**
+
+| Field type  | Loaded via        | Meaning                                                     |
+| ----------- | ----------------- | ----------------------------------------------------------- |
+| `Option<T>` | `fetch_one_in_tx` | At most one related `T` row (e.g. a "belongs to" relation). |
+| `Vec<T>`    | `fetch_in_tx`     | Zero or more related `T` rows (e.g. a "has many" relation). |
+
+In both cases `T` must implement `rusqlite_orm::dao::Entity` (i.e. it must itself be a `#[derive(Entity)]` struct).
+
+**Join arguments**
+
+`#[relationship(...)]` takes one or more `(local_field, remote_column)` pairs:
+
+- `local_field` is the name of a field on the _current_ struct whose value is used for the join.
+- `remote_column` is a path to the typed column constant on the _related_ entity's `entity::columns` module (e.g. `other::entity::columns::USER_ID`).
+
+A single pair generates a simple `Where::Eq(remote_column, self.local_field.into())` condition. Multiple pairs are combined with `Where::And(...)`, letting you express composite-key joins:
+
+```rust
+#[relationship(
+    (tenant_id, super::membership::entity::columns::TENANT_ID),
+    (user_id, super::membership::entity::columns::USER_ID)
+)]
+pub membership: Option<Membership>,
+```
+
+**Behavior**
+
+- Fields marked `#[relationship(...)]` are implicitly treated like `#[trasient]`: they are excluded from `INSERT`/`SELECT` column lists and are populated via `Default::default()` when a row is first mapped into the struct, so the struct must implement `Default`.
+- The macro generates two **instance methods** per relationship field (not on the repository, but directly on `YourStruct`):
+  - `fetch_<field>_relationship(&mut self) -> rusqlite_orm::database::errors::Result<()>` — opens its own transaction against the global connection, runs `<T>Repository::select().where_(<condition>)`, and assigns the result into `self.<field>`.
+  - `fetch_<field>_relationship_in_tx(&mut self, tx: &Transaction) -> rusqlite_orm::database::errors::Result<()>` — same, but reuses an existing transaction so it can be composed with other calls.
+- These methods mutate `self` in place; they don't return the related data, so call them and then read `self.<field>` afterwards.
+
+```rust
+let mut post = PostRepository::select_by_id(1)?.unwrap();
+post.fetch_author_relationship()?;
+post.fetch_comments_relationship()?;
+
+println!("{:?} has {} comments", post.author, post.comments.len());
+```
 
 ## `dlls!(path)`
 

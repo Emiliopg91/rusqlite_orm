@@ -22,8 +22,9 @@ This repository is a Cargo workspace made up of two crates:
   - on the **repository**: `exists`, `select_by_id` (and `_in_tx` variants);
   - on the **entity instance** itself: `update_by_id`, `delete_by_id` (and `_in_tx` variants).
 - **Generated index lookups** — declare `#[indexes((col_a, col_b), (col_c))]` on the struct to get, on the repository, `select_by_col_a_and_col_b(...)` / `select_by_col_c(...)` plus their `count_by_*` and `_in_tx` counterparts.
+- **Relationships between entities** — annotate an `Option<T>` or `Vec<T>` field with `#[relationship((local_field, remote_column), ...)]` to get `fetch_<field>_relationship` / `fetch_<field>_relationship_in_tx` instance methods that lazily load the related row(s).
 - **Optional derived `PartialEq` / `Eq` / `Hash`** based on the entity's id column(s), via `comparable` / `hashable` attribute flags.
-- **Fields excluded from the schema** with `#[dont_map]`, populated via `Default::default()` when mapping rows back (requires the struct to implement `Default`).
+- **Fields excluded from the schema** with `#[dont_map]`, populated via `Default::default()` when mapping rows back (requires the struct to implement `Default`). Relationship fields are excluded automatically the same way.
 - **Transaction support** — every query builder exposes both a "managed" method (`fetch`, `execute`, ...) that opens its own transaction against a global connection, and an `_in_tx` counterpart for composing multiple statements atomically.
 - **SQL-file schema migrations** — the `dlls!("path")` macro embeds every `<version>_<description>.sql` file found in a directory (relative to the crate manifest) into a static array of `DdlVersion`s, applied in order and tracked via SQLite's `PRAGMA user_version`.
 - **Query logging** — every generated statement is logged (via the `log` crate) with parameters interpolated, plus the number of affected/fetched rows.
@@ -34,8 +35,8 @@ Add both crates to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-rusqlite_orm = "0.1"
-rusqlite_orm_macros = "0.1"
+rusqlite_orm = "0.2"
+rusqlite_orm_macros = "0.2"
 ```
 
 `rusqlite_orm` re-exports `rusqlite`, accessible as `rusqlite_orm::rusqlite`, so most consumers won't need to add `rusqlite` as a separate dependency.
@@ -158,6 +159,48 @@ DATABASE_INST.lock().unwrap().run_in_tx(|tx| {
 })?;
 ```
 
+### 6. Relationships
+
+A field of type `Option<T>` or `Vec<T>` can be annotated with `#[relationship(...)]` to link an entity to related row(s) in another table, without the field being part of the entity's own columns:
+
+```rust
+#[derive(Entity, Debug, Clone, Default)]
+#[entity(table = "posts")]
+pub struct Post {
+    #[primary_key]
+    pub id: i64,
+    pub user_id: i64,
+    pub title: String,
+
+    // "belongs to" — Option<T>, loaded with fetch_one_in_tx
+    #[relationship((user_id, user::entity::columns::ID))]
+    pub author: Option<User>,
+
+    // "has many" — Vec<T>, loaded with fetch_in_tx
+    #[relationship((id, comment::entity::columns::POST_ID))]
+    pub comments: Vec<Comment>,
+}
+```
+
+Each `(local_field, remote_column)` pair builds an `Eq` condition between a field on the current struct and a typed column constant on the related entity; several pairs are combined with `AND`, which lets you model composite-key joins. Relationship fields behave like `#[dont_map]` fields under the hood: they're skipped by `INSERT`/`SELECT` and start out as `Default::default()`.
+
+The macro adds instance methods on the struct itself (not the repository) to lazily populate the field:
+
+```rust
+let mut post = PostRepository::select_by_id(1)?.unwrap();
+
+post.fetch_author_relationship()?;    // fills post.author: Option<User>
+post.fetch_comments_relationship()?;  // fills post.comments: Vec<Comment>
+
+// Composable in an existing transaction:
+DATABASE_INST.lock().unwrap().run_in_tx(|tx| {
+    post.fetch_author_relationship_in_tx(tx)?;
+    post.fetch_comments_relationship_in_tx(tx)
+})?;
+```
+
+See [`macros/README.md`](./macros/README.md#relationships) for the full attribute syntax, including composite joins.
+
 ## `WHERE` clause reference
 
 `Where<T>` (in `rusqlite_orm::dao::helpers::types::where_clause`) supports:
@@ -182,7 +225,7 @@ All fallible operations return `rusqlite_orm::database::errors::Result<T>`, an a
 ## Crate details
 
 - **[`orm/`](./orm)** — see [`orm/README.md`](./orm/README.md) for crate-specific documentation.
-- **[`macros/`](./macros)** — the proc-macro crate. It has no runtime dependencies beyond `syn`, `quote`, and `proc-macro2`, and is intended to be used together with `rusqlite_orm`, not standalone. See [`macros/README.md`](./macros/README.md) for the full list of supported attributes.
+- **[`macros/`](./macros)** — the proc-macro crate. It has no runtime dependencies beyond `syn`, `quote`, and `proc-macro2`, and is intended to be used together with `rusqlite_orm`, not standalone. See [`macros/README.md`](./macros/README.md) for the full list of supported attributes, including `#[relationship(...)]`.
 
 ## License
 
