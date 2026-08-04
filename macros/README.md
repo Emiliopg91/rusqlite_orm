@@ -18,7 +18,7 @@ pub struct User {
     #[column(name = "email_address")]
     pub email: String,
     pub name: String,
-    #[trasient]
+    #[transient]
     pub transient_flag: bool,
 }
 ```
@@ -38,7 +38,7 @@ pub struct User {
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `#[primary_key]`                                     | Marks the field as (part of) the primary key. Any struct with one or more `#[primary_key]` fields gets `select_by_id`, `exists`, `update_by_id`, `delete_by_id` (and `_in_tx` variants). Multiple `#[primary_key]` fields are combined with `AND`. |
 | `#[column(name = "...")]`                            | Overrides the column name (defaults to the field name, lowercased).                                                                                                                                                                                |
-| `#[trasient]`                                        | Excludes the field from `INSERT`/`SELECT` column lists entirely. When mapping a row back into the struct, this field is filled in via `Default::default()` — the struct must implement `Default`.                                                  |
+| `#[transient]`                                       | Excludes the field from `INSERT`/`SELECT` column lists entirely. When mapping a row back into the struct, this field is filled in via `Default::default()` — the struct must implement `Default`.                                                  |
 | `#[relationship((local_field, remote_column), ...)]` | Declares the field as a related entity rather than a persisted column (see [Relationships](#relationships) below).                                                                                                                                 |
 
 **Generated code**
@@ -100,7 +100,7 @@ pub membership: Option<Membership>,
 
 **Behavior**
 
-- Fields marked `#[relationship(...)]` are implicitly treated like `#[trasient]`: they are excluded from `INSERT`/`SELECT` column lists and are populated via `Default::default()` when a row is first mapped into the struct, so the struct must implement `Default`.
+- Fields marked `#[relationship(...)]` are implicitly treated like `#[transient]`: they are excluded from `INSERT`/`SELECT` column lists and are populated via `Default::default()` when a row is first mapped into the struct, so the struct must implement `Default`.
 - The macro generates two **instance methods** per relationship field (not on the repository, but directly on `YourStruct`):
   - `fetch_<field>_relationship(&mut self) -> rusqlite_orm::database::errors::Result<()>` — opens its own transaction against the global connection, runs `<T>Repository::select().where_(<condition>)`, and assigns the result into `self.<field>`.
   - `fetch_<field>_relationship_in_tx(&mut self, tx: &Transaction) -> rusqlite_orm::database::errors::Result<()>` — same, but reuses an existing transaction so it can be composed with other calls.
