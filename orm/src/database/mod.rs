@@ -21,6 +21,12 @@ pub struct Database {
     connection: Option<Connection>,
 }
 
+impl Default for Database {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Database {
     pub fn new() -> Self {
         Self { connection: None }

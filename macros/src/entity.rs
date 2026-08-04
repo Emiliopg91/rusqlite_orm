@@ -6,40 +6,65 @@ use syn::{
     parenthesized, parse::ParseStream, parse_macro_input, parse_quote, punctuated::Punctuated,
 };
 
+/// Metadatos de un campo "persistente" de la entidad (no transient, no relationship).
 struct FieldInfo {
+    /// Nombre del campo en la struct de Rust.
     ident: syn::Ident,
+    /// Nombre de la columna en la base de datos (por defecto el nombre en minúsculas).
     column: String,
+    /// Tipo Rust del campo.
     ty: syn::Type,
+    /// Identificador de la constante generada para la columna (nombre del campo en mayúsculas).
     const_ident: syn::Ident,
+    /// Indica si el campo está marcado con `#[primary_key]`.
     is_id: bool,
 }
 
+/// Valores extraídos del atributo `#[entity(...)]` a nivel de struct.
 struct EntityAttrs {
+    /// Nombre de la tabla; si no se especifica se usa el nombre de la struct en minúsculas.
     table_name: String,
+    /// Si es `true`, se genera `impl PartialEq`/`Eq` basado en los campos id.
     comparable: bool,
+    /// Si es `true`, se genera `impl Hash` basado en los campos id.
     hashable: bool,
 }
 
+/// Resultado de analizar todos los campos de la struct anotada.
 struct ParsedFields {
     fields: Vec<FieldInfo>,
     relationships: Vec<RelationshipDefinition>,
+    /// `true` si existe al menos un campo `#[transient]` o `#[relationship]`, para poder
+    /// completar la instancia con `..Default::default()` al reconstruirla desde una fila.
     has_transient: bool,
+    /// `true` si existe al menos un campo `#[primary_key]`.
     has_id: bool,
 }
 
+/// Definición de una relación declarada con `#[relationship(...)]` (campo `Option<T>` o `Vec<T>`).
 struct RelationshipDefinition {
+    /// Campo de la struct que almacena la relación.
     field: syn::Ident,
+    /// `true` si el campo es `Option<T>` (relación a lo sumo 1) o `false` si es `Vec<T>` (a muchos).
     by_id: bool,
+    /// Tipo `T` de la entidad relacionada.
     ty: syn::Type,
+    /// Pares (campo local, columna remota) usados para construir la condición de join.
     joins: Vec<(Ident, Path)>,
 }
 
+/// Definición de un índice declarado con `#[indexes(...)]` o `#[uniques(...)]`.
 struct IndexDefinition<'a> {
+    /// Columnas que forman parte del índice y que se reciben como parámetro en las funciones generadas.
     pub columns: Vec<&'a FieldInfo>,
+    /// Columnas fijadas a un valor literal constante (p. ej. `#[indexes((status = "active"))]`).
     pub conditions: Vec<(&'a FieldInfo, syn::Lit)>,
+    /// Si es `true` el índice es único y las funciones generadas devuelven `Option` en vez de `Vec`.
     pub unique: bool,
 }
 
+/// Lee el atributo `#[entity(table = "...", comparable = bool, hashable = bool)]` de la struct.
+/// Cualquier clave distinta de `table`/`comparable`/`hashable` produce un error de compilación.
 fn parse_entity_attrs(input: &DeriveInput, default_table_name: String) -> syn::Result<EntityAttrs> {
     let mut table_name = default_table_name;
     let mut comparable = false;
@@ -81,6 +106,8 @@ fn parse_entity_attrs(input: &DeriveInput, default_table_name: String) -> syn::R
     })
 }
 
+/// Extrae los campos con nombre de la struct de entrada; falla si `derive(Entity)` se aplica
+/// sobre algo distinto de una struct con campos nombrados (enums, tuplas, unit structs, etc.).
 fn get_named_fields(input: &DeriveInput) -> syn::Result<&Punctuated<syn::Field, Token![,]>> {
     match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -97,6 +124,9 @@ fn get_named_fields(input: &DeriveInput) -> syn::Result<&Punctuated<syn::Field, 
     }
 }
 
+/// Clasifica cada campo de la struct en: transient (ignorado por la persistencia), relationship
+/// (produce una `RelationshipDefinition` y no se mapea a columna) o campo normal (produce un
+/// `FieldInfo`). También resuelve el nombre de columna a partir de `#[column(name = "...")]`.
 fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<ParsedFields> {
     let mut has_transient = false;
     let mut has_id = false;
@@ -137,6 +167,8 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
                     }
                 })?;
             } else if attr.path().is_ident("relationship") {
+                // Las relaciones no se persisten como columna propia: se marcan como transient
+                // para que map_from_row las rellene con Default y no se incluyan en get_values.
                 has_transient = true;
                 add = false;
 
@@ -145,9 +177,11 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
                     if let Some(segment) = type_path.path.segments.last() {
                         let ident_str = segment.ident.to_string();
 
+                        // Solo nos interesa el tipo genérico interno T de Option<T>/Vec<T>.
                         if let PathArguments::AngleBracketed(args) = &segment.arguments
                             && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
                         {
+                            // Option<T> => relación a lo sumo 1 (by_id); Vec<T> => relación a muchos.
                             let by_id = match ident_str.as_str() {
                                 "Option" => true,
                                 "Vec" => false,
@@ -159,6 +193,8 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
                                 }
                             };
 
+                            // Sintaxis: #[relationship((local_field, remote::Column), (local_field2, remote::Column2), ...)]
+                            // Cada par entre paréntesis define una condición de join local = remoto.
                             let joins: Vec<(Ident, Path)> = attr.parse_args_with(|input: ParseStream| {
                                     let pairs = Punctuated::<(Ident, Path), Token![,]>::parse_terminated_with(
                                         input,
@@ -211,6 +247,8 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
     })
 }
 
+/// `comparable`/`hashable` dependen de comparar por clave primaria, así que exigen que la
+/// entidad tenga al menos un campo `#[primary_key]`.
 fn validate_id_requirements(
     input: &DeriveInput,
     has_id: bool,
@@ -234,6 +272,11 @@ fn validate_id_requirements(
     Ok(())
 }
 
+/// Parsea los atributos `#[indexes((col1, col2), (col3 = "literal"), ...)]` y
+/// `#[uniques(...)]` de la struct. Dentro de cada grupo entre paréntesis, un identificador
+/// suelto es una columna variable del índice (recibida como parámetro en las funciones
+/// generadas) y un `ident = literal` es una condición fija (el índice queda restringido a
+/// ese valor constante). Puede haber varios grupos de índices, cada uno entre paréntesis.
 fn parse_indexes<'a>(
     input: &DeriveInput,
     fields: &'a [FieldInfo],
@@ -292,6 +335,11 @@ fn parse_indexes<'a>(
     Ok(indexes)
 }
 
+/// Genera la expresión `Where` que identifica una fila por su clave primaria: una única
+/// igualdad si hay un solo campo id, o un `Where::And` de igualdades si la clave es compuesta.
+/// `value_for` decide cómo obtener el valor de cada campo (p. ej. `self.campo` o el parámetro
+/// de función homónimo), lo que permite reutilizar esta función tanto en el `impl` de la
+/// entidad como en el del repositorio.
 fn build_condition(
     id_fields: &[&FieldInfo],
     value_for: impl Fn(&FieldInfo) -> TokenStream2,
@@ -321,6 +369,9 @@ fn build_condition(
     }
 }
 
+/// Análogo a `build_condition` pero para un `IndexDefinition`: combina las columnas variables
+/// (usando `value_for`) y las condiciones fijas (literal embebido en el propio atributo) en un
+/// único `Where`, uniéndolas con `And` cuando hay más de una.
 fn build_index_condition(
     index: &IndexDefinition,
     value_for: impl Fn(&FieldInfo) -> TokenStream2,
@@ -368,6 +419,9 @@ fn build_index_condition(
     }
 }
 
+/// Construye el parámetro de función `nombre: Tipo` para un campo, sustituyendo `String` por
+/// `&str` para que las funciones generadas (select_by_id, select_by_<índice>, etc.) acepten
+/// referencias en vez de forzar al llamador a pasar un `String` propio.
 fn param_type(f: &FieldInfo) -> TokenStream2 {
     let ident = &f.ident;
     let mut ty = &f.ty;
@@ -382,6 +436,9 @@ fn param_type(f: &FieldInfo) -> TokenStream2 {
     quote! { #ident: #ty }
 }
 
+/// Genera el módulo `entity` anidado en el struct, con la constante `TABLE` y el submódulo
+/// `columns` con una constante tipada por columna (usadas en el resto de funciones generadas
+/// para referenciar tabla/columnas de forma type-safe en vez de por string).
 fn build_entity_module(
     struct_name: &syn::Ident,
     table_name: &str,
@@ -416,6 +473,9 @@ fn build_entity_module(
     }
 }
 
+/// Genera el `impl Entity` requerido por el ORM: la lista de columnas, el mapeo de una fila de
+/// resultado a la struct (`map_from_row`) y la extracción de valores para persistir
+/// (`get_values`).
 fn build_entity_trait_impl(
     struct_name: &syn::Ident,
     fields: &[FieldInfo],
@@ -426,12 +486,16 @@ fn build_entity_trait_impl(
         quote! { self::entity::columns::#ident }
     });
 
+    // Cada campo se lee por posición (idx), asumiendo que el SELECT devuelve las columnas
+    // en el mismo orden que FIELDS.
     let map_from_rows_lines = fields.iter().enumerate().map(|(idx, f)| {
         let ident = &f.ident;
         let ty = &f.ty;
         quote! { #ident: row.get::<_, #ty>(#idx)? }
     });
 
+    // Si hay campos transient/relationship, no vienen en la fila: se completan con su valor
+    // por defecto vía `..Default::default()`.
     let default_spread = if has_transient {
         quote! { , ..Default::default() }
     } else {
@@ -474,6 +538,9 @@ fn build_entity_trait_impl(
     }
 }
 
+/// Genera, para cada `#[relationship(...)]`, un par de métodos `fetch_<campo>_relationship[_in_tx]`
+/// que cargan la entidad/lista relacionada en el propio campo, construyendo el `Where` de join
+/// a partir de los pares (campo local, columna remota) declarados en el atributo.
 fn build_entity_with_relationships_trait_impl(
     relationships: Vec<RelationshipDefinition>,
 ) -> TokenStream2 {
@@ -483,6 +550,7 @@ fn build_entity_with_relationships_trait_impl(
         let impls = relationships.iter().map(|rel|  {
             let field = &rel.field;
             let ty = &rel.ty;
+            // Un solo join => igualdad simple; varios joins => Where::And de igualdades.
             let condition = if rel.joins.len() == 1 {
                 let col = rel.joins.first().unwrap().1.clone();
                 let ffj = rel.joins.first().unwrap().0.clone();
@@ -504,6 +572,7 @@ fn build_entity_with_relationships_trait_impl(
                     ])
                 }
             };
+            // Relación Option<T> => se espera como mucho una fila (fetch_one); Vec<T> => varias.
             let fn_inv = if rel.by_id {
                 quote! {
                     fetch_one_in_tx
@@ -546,6 +615,9 @@ fn build_entity_with_relationships_trait_impl(
     }
 }
 
+/// Genera, en el `impl` de la entidad, los métodos de instancia `update_by_id`/`delete_by_id`
+/// (y sus variantes `_in_tx`) que actualizan/eliminan la fila identificada por sus campos
+/// `#[primary_key]`. No se genera nada si la entidad no tiene clave primaria.
 fn build_primary_key_impl(
     struct_name: &syn::Ident,
     fields: &[FieldInfo],
@@ -612,6 +684,9 @@ fn build_primary_key_impl(
     }
 }
 
+/// Genera, en el `impl` del repositorio, las funciones asociadas `exists`/`select_by_id`
+/// (y sus variantes `_in_tx`) que reciben los campos de la clave primaria como parámetros.
+/// No se genera nada si la entidad no tiene clave primaria.
 fn repository_build_primary_key_impl(
     struct_name: &syn::Ident,
     id_fields: &[&FieldInfo],
@@ -671,6 +746,11 @@ fn repository_build_primary_key_impl(
     }
 }
 
+/// Genera, en el `impl` del repositorio, cuatro funciones asociadas por cada índice declarado:
+/// `select_by_<cols>[_in_tx]` y `count_by_<cols>[_in_tx]`. El nombre de la función se deriva de
+/// las columnas variables del índice y, si hay condiciones fijas, de un sufijo `_where_<cond>`.
+/// Los índices `unique` devuelven `Option<T>` y no aceptan `order_by`; los no únicos devuelven
+/// `Vec<T>` y sí lo aceptan.
 fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> TokenStream2 {
     if indexes.is_empty() {
         return quote! {};
@@ -682,10 +762,14 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             &index.columns.iter().map(|i| i.ident.to_string()).collect::<Vec<String>>().join("_and_"),
         );
         let mut fn_name_count = format_ident!(
-            "count_by_{}",
+            "{}_by_{}",
+            if index.unique {"exists"} else {"count"},
             &index.columns.iter().map(|i| i.ident.to_string()).collect::<Vec<String>>().join("_and_"),
         );
 
+        // Si el índice tiene condiciones fijas (col = literal), se añade un sufijo al nombre de
+        // la función con el valor literal saneado (sin comillas ni espacios) para que sea un
+        // identificador Rust válido, p. ej. `select_by_user_id_where_status_eq_active`.
         if !index.conditions.is_empty(){
             let sufix = format!("where_{}",
                 index.conditions.iter().map(|c|{
@@ -717,10 +801,12 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
         let  idx_col_names= index.columns.iter().map(|i| i.ident.to_string()).collect::<Vec<String>>().join(", ");
         let idx_col_names_idents = index.columns.iter().map(|i| i.ident.clone()).collect::<Vec<syn::Ident>>();
         let doc1=format!("Fetch row{} by {} index", if index.unique {""} else {"s"}, idx_col_names);
-        let doc2=format!("Fetch row{} by {} index in transaction", if index.unique {""} else {"s"}, idx_col_names);
-        let doc3=format!("Count row{} by {} index", if index.unique {""} else {"s"}, idx_col_names);
-        let doc4=format!("Count row{} by {} index in transaction", if index.unique {""} else {"s"}, idx_col_names);
+        let doc2=format!("{} in transaction", doc1);
+        let doc3=format!("{} by {} index", if index.unique {"Exists"} else {"Count rows"}, idx_col_names);
+        let doc4=format!("{} in transaction", doc3);
 
+        // Un índice único devuelve como mucho una fila, así que ordenar no tiene sentido:
+        // solo los índices no únicos exponen el parámetro `order_by`.
         let order_by_arg = if index.unique {
             quote! {}
         } else {
@@ -736,6 +822,28 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
         } else {
             quote!{
                 Vec<#struct_name>
+            }
+        };
+
+        let cnt_ret_type = if index.unique {
+            quote! {
+                bool
+            }
+        } else {
+            quote!{
+                i64
+            }
+        };
+
+        let cnt_impl = if index.unique{
+            quote!{
+                Ok(<#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
+                    .where_(#condition).count_in_tx(tx)?>0)
+            }
+        } else {
+            quote! {
+                <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
+                    .where_(#condition).count_in_tx(tx)
             }
         };
 
@@ -779,15 +887,14 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             }
 
             #[doc = #doc3]
-            pub fn #fn_name_count(#(#select_params),*) -> rusqlite_orm::database::errors::Result<i64> {
+            pub fn #fn_name_count(#(#select_params),*) -> rusqlite_orm::database::errors::Result<#cnt_ret_type> {
                 let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
                 db.run_in_tx(|tx| Self::#fn_name_count_tx(tx, #(#idx_col_names_idents),*))
             }
 
             #[doc = #doc4]
-            pub fn #fn_name_count_tx(tx: &rusqlite_orm::rusqlite::Transaction, #(#select_params),*) -> rusqlite_orm::database::errors::Result<i64> {
-                <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
-                    .where_(#condition).count_in_tx(tx)
+            pub fn #fn_name_count_tx(tx: &rusqlite_orm::rusqlite::Transaction, #(#select_params),*) -> rusqlite_orm::database::errors::Result<#cnt_ret_type> {
+                #cnt_impl
             }
         }
     });
@@ -797,6 +904,8 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
     }
 }
 
+/// Cuando `#[entity(comparable = true)]`, genera `PartialEq`/`Eq` comparando únicamente los
+/// campos `#[primary_key]` (dos instancias son iguales si representan la misma fila).
 fn build_comparable_impl(
     struct_name: &syn::Ident,
     comparable: bool,
@@ -824,6 +933,8 @@ fn build_comparable_impl(
     }
 }
 
+/// Cuando `#[entity(hashable = true)]`, genera `std::hash::Hash` hasheando únicamente los
+/// campos `#[primary_key]`, coherente con el `Eq` generado por `build_comparable_impl`.
 fn build_hashable_impl(
     struct_name: &syn::Ident,
     hashable: bool,
@@ -850,10 +961,15 @@ fn build_hashable_impl(
     }
 }
 
+/// Punto de entrada del `#[derive(Entity)]`: orquesta el parseo de atributos/campos/índices y
+/// combina la salida de cada `build_*` en el módulo `entity`, el `impl Entity`, los `impl`
+/// opcionales (`PartialEq`/`Eq`, `Hash`) y la struct `<Struct>Repository` con sus métodos.
 pub fn derive_entity(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = &input.ident;
 
+    // Cualquier `syn::Result::Err` en las funciones de parseo se convierte directamente en un
+    // error de compilación con el span del nodo correspondiente, en vez de un `panic!`.
     macro_rules! bail_on_err {
         ($expr:expr) => {
             match $expr {

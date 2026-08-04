@@ -22,6 +22,7 @@ This repository is a Cargo workspace made up of two crates:
   - on the **repository**: `exists`, `select_by_id` (and `_in_tx` variants);
   - on the **entity instance** itself: `update_by_id`, `delete_by_id` (and `_in_tx` variants).
 - **Generated index lookups** — declare `#[indexes((col_a, col_b), (col_c))]` on the struct to get, on the repository, `select_by_col_a_and_col_b(...)` / `select_by_col_c(...)` plus their `count_by_*` and `_in_tx` counterparts.
+- **Generated unique-index lookups** — `#[uniques((col_d), (col_e, col_f))]` uses the same syntax as `#[indexes(...)]`, but each generated `select_by_*` returns `Option<Self>` (at most one row) instead of `Vec<Self>`, and has no `order_by` parameter.
 - **Relationships between entities** — annotate an `Option<T>` or `Vec<T>` field with `#[relationship((local_field, remote_column), ...)]` to get `fetch_<field>_relationship` / `fetch_<field>_relationship_in_tx` instance methods that lazily load the related row(s).
 - **Optional derived `PartialEq` / `Eq` / `Hash`** based on the entity's id column(s), via `comparable` / `hashable` attribute flags.
 - **Fields excluded from the schema** with `#[dont_map]`, populated via `Default::default()` when mapping rows back (requires the struct to implement `Default`). Relationship fields are excluded automatically the same way.
@@ -72,6 +73,8 @@ This expands into:
   - `UserRepository::exists(id)` / `UserRepository::select_by_id(id)` (and `_in_tx` variants),
   - `UserRepository::select_by_email(email, order_by)` and `UserRepository::count_by_email(email)` (because of the `#[indexes((email))]` attribute), plus their `_in_tx` variants,
 - `PartialEq` / `Eq` and `Hash` implementations for `User` based on `id` (because `comparable` and `hashable` are set to `true`).
+
+`#[uniques(...)]` works exactly like `#[indexes(...)]` but marks a column group as unique. For example, adding `#[uniques((email))]` to `User` above generates `UserRepository::select_by_email(email)` returning `Option<User>` (no `order_by` parameter, since a unique group matches at most one row) and `UserRepository::count_by_email(email)`, plus their `_in_tx` variants. A group can also mix variable columns with fixed conditions, e.g. `#[uniques((tenant_id, username), (email))]`. Note that the attribute only generates the lookup helpers — it does **not** create a `UNIQUE` constraint in the database; that still needs to be declared in your DDL. See [`macros/README.md`](../macros/README.md#indexes-and-unique-indexes) for the full syntax.
 
 `#[dont_map]` fields are skipped when building `INSERT`/`SELECT` column lists and are restored to their `Default` value when a row is mapped back into the struct.
 

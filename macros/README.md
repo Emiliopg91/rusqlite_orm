@@ -30,7 +30,8 @@ pub struct User {
 | `#[entity(table = "...")]`            | Overrides the SQL table name (defaults to the struct name, lowercased).                                                                                    |
 | `#[entity(comparable = true)]`        | Derives `PartialEq`/`Eq` comparing only the `#[primary_key]` field(s). Requires at least one `#[primary_key]` field.                                       |
 | `#[entity(hashable = true)]`          | Derives `Hash` based only on the `#[primary_key]` field(s). Requires at least one `#[primary_key]` field.                                                  |
-| `#[indexes((col_a, col_b), (col_c))]` | Generates `select_by_col_a_and_col_b(..., order_by)` / `select_by_col_c(..., order_by)` (and `_in_tx`/`count_by_*` variants) for each listed column group. |
+| `#[indexes((col_a, col_b), (col_c))]` | Generates `select_by_col_a_and_col_b(..., order_by)` / `select_by_col_c(..., order_by)` (and `_in_tx`/`count_by_*` variants) for each listed column group. Returns `Vec<Self>`. |
+| `#[uniques((col_d), (col_e, col_f))]` | Same syntax as `#[indexes(...)]`, but for column groups that are unique. Generates `select_by_col_d(...)` / `select_by_col_e_and_col_f(...)` (and `_in_tx`/`count_by_*` variants) returning `Option<Self>` instead of `Vec<Self>`, and without an `order_by` parameter (see [Indexes and unique indexes](#indexes-and-unique-indexes) below). |
 
 **Field-level attributes**
 
@@ -47,9 +48,49 @@ pub struct User {
 - An `impl rusqlite_orm::dao::Entity for YourStruct` providing `TABLE_NAME`, `FIELDS`, `map_from_row`, and `get_values`.
 - A `YourStructRepository` struct implementing `rusqlite_orm::dao::Repository<YourStruct>`.
 - `exists` / `select_by_id` / `update_by_id` / `delete_by_id` (+ `_in_tx`) when the struct has `#[primary_key]` field(s).
-- `select_by_<fields>` / `count_by_<fields>` (+ `_in_tx`) for every group declared in `#[indexes(...)]`.
+- `select_by_<fields>` / `count_by_<fields>` (+ `_in_tx`) for every group declared in `#[indexes(...)]` or `#[uniques(...)]`.
 - `PartialEq`/`Eq` and/or `Hash` impls when `comparable`/`hashable` are enabled.
 - `fetch_<field>_relationship` / `fetch_<field>_relationship_in_tx` for every field annotated with `#[relationship(...)]`.
+
+## Indexes and unique indexes
+
+`#[indexes(...)]` and `#[uniques(...)]` share the same syntax and are declared at struct level, alongside `#[entity(...)]`. Each takes one or more column groups, one per pair of parentheses:
+
+```rust
+#[derive(Entity, Debug, Clone, Default)]
+#[entity(table = "users")]
+#[indexes((last_name))]
+#[uniques((email), (tenant_id, username))]
+pub struct User {
+    #[primary_key]
+    pub id: i64,
+    pub tenant_id: i64,
+    pub username: String,
+    pub email: String,
+    pub last_name: String,
+    pub status: String,
+}
+```
+
+Within a group, a bare identifier (e.g. `tenant_id`) is a **variable column**: it becomes a parameter of the generated functions. An `ident = literal` pair (e.g. `status = "active"`) is instead a **fixed condition**: the index is restricted to that constant value and it does *not* become a parameter, but its sanitized value is appended to the function name (e.g. `select_by_tenant_id_where_status_eq_active`).
+
+**`#[indexes(...)]` vs. `#[uniques(...)]`**
+
+| | `#[indexes(...)]` | `#[uniques(...)]` |
+| --- | --- | --- |
+| Meaning | Non-unique lookup group | Unique lookup group (at most one matching row) |
+| Return type | `Vec<Self>` | `Option<Self>` |
+| `order_by` parameter | Yes | No — a unique index can match at most one row, so ordering is meaningless |
+| Fetch method used internally | `fetch_in_tx` | `fetch_one_in_tx` |
+
+For a group `(tenant_id, username)` declared with `#[uniques(...)]`, the macro generates on the repository impl:
+
+- `select_by_tenant_id_and_username(tenant_id, username) -> Result<Option<Self>>`
+- `select_by_tenant_id_and_username_in_tx(tx, tenant_id, username) -> Result<Option<Self>>`
+- `count_by_tenant_id_and_username(tenant_id, username) -> Result<i64>`
+- `count_by_tenant_id_and_username_in_tx(tx, tenant_id, username) -> Result<i64>`
+
+The `#[uniques(...)]` attribute only generates lookup functions based on the assumption that the column group is unique; it does **not** create a `UNIQUE` constraint in the database schema itself — that still has to be declared in your DDL (see [`dlls!(path)`](#dllspath) below).
 
 ## Relationships
 
