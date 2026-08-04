@@ -6,66 +6,90 @@ use syn::{
     parenthesized, parse::ParseStream, parse_macro_input, parse_quote, punctuated::Punctuated,
 };
 
-/// Metadatos de un campo "persistente" de la entidad (no transient, no relationship).
-struct FieldInfo {
-    /// Nombre del campo en la struct de Rust.
-    ident: syn::Ident,
-    /// Nombre de la columna en la base de datos (por defecto el nombre en minúsculas).
-    column: String,
-    /// Tipo Rust del campo.
-    ty: syn::Type,
-    /// Identificador de la constante generada para la columna (nombre del campo en mayúsculas).
-    const_ident: syn::Ident,
-    /// Indica si el campo está marcado con `#[primary_key]`.
-    is_id: bool,
+
+/// Punto de entrada del `#[derive(Entity)]`: orquesta el parseo de atributos/campos/índices y
+/// combina la salida de cada `build_*` en el módulo `entity`, el `impl Entity`, los `impl`
+/// opcionales (`PartialEq`/`Eq`, `Hash`) y la struct `<Struct>Repository` con sus métodos.
+pub fn derive_entity(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    let struct_name = &input.ident;
+
+    // Cualquier `syn::Result::Err` en las funciones de parseo se convierte directamente en un
+    // error de compilación con el span del nodo correspondiente, en vez de un `panic!`.
+    macro_rules! bail_on_err {
+        ($expr:expr) => {
+            match $expr {
+                Ok(value) => value,
+                Err(err) => return err.to_compile_error().into(),
+            }
+        };
+    }
+
+    let default_table_name = struct_name.to_string().to_lowercase();
+    let entity_attrs = bail_on_err!(parse_entity_attrs(&input, default_table_name));
+
+    let named_fields = bail_on_err!(get_named_fields(&input));
+    let ParsedFields {
+        fields,
+        has_transient,
+        has_id,
+        relationships,
+    } = bail_on_err!(parse_fields(named_fields));
+
+    let repo_ident = format_ident!("{}Repository", struct_name);
+
+    bail_on_err!(validate_id_requirements(
+        &input,
+        has_id,
+        entity_attrs.comparable,
+        entity_attrs.hashable
+    ));
+
+    let indexes = bail_on_err!(parse_indexes(&input, &fields));
+    let id_fields: Vec<&FieldInfo> = fields.iter().filter(|f| f.is_id).collect();
+
+    let entity_module = build_entity_module(struct_name, &entity_attrs.schema_name, &entity_attrs.table_name, &fields);
+    let entity_trait_impl = build_entity_trait_impl(struct_name, &fields, has_transient);
+    let primary_key_operation = build_primary_key_impl(struct_name, &fields, &id_fields);
+    let repository_primary_key_operation =
+        repository_build_primary_key_impl(struct_name, &id_fields);
+    let indexes_impl = build_indexes_impl(struct_name, &indexes);
+    let comparable_impl = build_comparable_impl(struct_name, entity_attrs.comparable, &id_fields);
+    let hashable_impl = build_hashable_impl(struct_name, entity_attrs.hashable, &id_fields);
+    let relationships_impl = build_entity_with_relationships_trait_impl(relationships);
+
+    let repo_doc = format!("Repository for {}", struct_name);
+    let expanded = quote! {
+        #entity_module
+
+        #entity_trait_impl
+
+        #comparable_impl
+
+        #hashable_impl
+
+        impl #struct_name {
+            #primary_key_operation
+            #relationships_impl
+        }
+
+        #[doc = #repo_doc]
+        pub struct #repo_ident;
+        impl rusqlite_orm::dao::Repository<#struct_name> for #repo_ident{}
+        impl #repo_ident{
+            #indexes_impl
+            #repository_primary_key_operation
+        }
+    };
+
+    expanded.into()
 }
 
-/// Valores extraídos del atributo `#[entity(...)]` a nivel de struct.
-struct EntityAttrs {
-    /// Nombre de la tabla; si no se especifica se usa el nombre de la struct en minúsculas.
-    table_name: String,
-    /// Si es `true`, se genera `impl PartialEq`/`Eq` basado en los campos id.
-    comparable: bool,
-    /// Si es `true`, se genera `impl Hash` basado en los campos id.
-    hashable: bool,
-}
-
-/// Resultado de analizar todos los campos de la struct anotada.
-struct ParsedFields {
-    fields: Vec<FieldInfo>,
-    relationships: Vec<RelationshipDefinition>,
-    /// `true` si existe al menos un campo `#[transient]` o `#[relationship]`, para poder
-    /// completar la instancia con `..Default::default()` al reconstruirla desde una fila.
-    has_transient: bool,
-    /// `true` si existe al menos un campo `#[primary_key]`.
-    has_id: bool,
-}
-
-/// Definición de una relación declarada con `#[relationship(...)]` (campo `Option<T>` o `Vec<T>`).
-struct RelationshipDefinition {
-    /// Campo de la struct que almacena la relación.
-    field: syn::Ident,
-    /// `true` si el campo es `Option<T>` (relación a lo sumo 1) o `false` si es `Vec<T>` (a muchos).
-    by_id: bool,
-    /// Tipo `T` de la entidad relacionada.
-    ty: syn::Type,
-    /// Pares (campo local, columna remota) usados para construir la condición de join.
-    joins: Vec<(Ident, Path)>,
-}
-
-/// Definición de un índice declarado con `#[indexes(...)]` o `#[uniques(...)]`.
-struct IndexDefinition<'a> {
-    /// Columnas que forman parte del índice y que se reciben como parámetro en las funciones generadas.
-    pub columns: Vec<&'a FieldInfo>,
-    /// Columnas fijadas a un valor literal constante (p. ej. `#[indexes((status = "active"))]`).
-    pub conditions: Vec<(&'a FieldInfo, syn::Lit)>,
-    /// Si es `true` el índice es único y las funciones generadas devuelven `Option` en vez de `Vec`.
-    pub unique: bool,
-}
 
 /// Lee el atributo `#[entity(table = "...", comparable = bool, hashable = bool)]` de la struct.
 /// Cualquier clave distinta de `table`/`comparable`/`hashable` produce un error de compilación.
 fn parse_entity_attrs(input: &DeriveInput, default_table_name: String) -> syn::Result<EntityAttrs> {
+    let mut schema_name = "main".to_string();
     let mut table_name = default_table_name;
     let mut comparable = false;
     let mut hashable = false;
@@ -76,11 +100,18 @@ fn parse_entity_attrs(input: &DeriveInput, default_table_name: String) -> syn::R
         }
 
         attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("table") {
+            if meta.path.is_ident("schema") {
+                let lit: syn::LitStr = meta.value()?.parse()?;
+                schema_name = lit.value().trim().to_string();
+                if schema_name.is_empty() {
+                    return Err(meta.error("Attribute table cannot be empty"));
+                }
+                Ok(())
+            } else if meta.path.is_ident("table") {
                 let lit: syn::LitStr = meta.value()?.parse()?;
                 table_name = lit.value().trim().to_string();
                 if table_name.is_empty() {
-                    return Err(meta.error("Attribute table cannot be empty"));
+                    return Err(meta.error("Attribute schema cannot be empty"));
                 }
                 Ok(())
             } else if meta.path.is_ident("comparable") {
@@ -93,13 +124,14 @@ fn parse_entity_attrs(input: &DeriveInput, default_table_name: String) -> syn::R
                 Ok(())
             } else {
                 Err(meta.error(
-                    "Attribute `entity` not recognized, expected `table = \"...\"`, `comparable = true|false` or `hashable = true|false`",
+                    "Attribute `entity` not recognized, expected `schema = \"...\"`, `table = \"...\"`, `comparable = true|false` or `hashable = true|false`",
                 ))
             }
         })?;
     }
 
     Ok(EntityAttrs {
+        schema_name,
         table_name,
         comparable,
         hashable,
@@ -441,9 +473,17 @@ fn param_type(f: &FieldInfo) -> TokenStream2 {
 /// para referenciar tabla/columnas de forma type-safe en vez de por string).
 fn build_entity_module(
     struct_name: &syn::Ident,
+    schema_name: &str,
     table_name: &str,
     fields: &[FieldInfo],
 ) -> TokenStream2 {
+    let doc = format!("Constant for name of database schema {}", table_name);
+    let schema_name_constant = quote! {
+        #[doc = #doc]
+        pub const SCHEMA: rusqlite_orm::dao::helpers::types::schema::Schema<super::#struct_name> =
+            rusqlite_orm::dao::helpers::types::schema::Schema::<super::#struct_name>::new(#schema_name);
+    };
+
     let doc = format!("Constant for name of database table {}", table_name);
     let table_name_constant = quote! {
         #[doc = #doc]
@@ -465,6 +505,7 @@ fn build_entity_module(
     quote! {
         ///Module with entity table metadata
         pub mod entity {
+            #schema_name_constant
             #table_name_constant
             pub mod columns {
                 #(#field_constants)*
@@ -510,6 +551,9 @@ fn build_entity_trait_impl(
 
     quote! {
         impl rusqlite_orm::dao::Entity for #struct_name {
+            #[doc = "Database schema constant"]
+            const SCHEMA: &'static rusqlite_orm::dao::helpers::types::schema::Schema<Self> = &self::entity::SCHEMA;
+
             #[doc = "Table name constant"]
             const TABLE_NAME: &'static rusqlite_orm::dao::helpers::types::table_name::TableName<Self> = &self::entity::TABLE;
 
@@ -961,80 +1005,63 @@ fn build_hashable_impl(
     }
 }
 
-/// Punto de entrada del `#[derive(Entity)]`: orquesta el parseo de atributos/campos/índices y
-/// combina la salida de cada `build_*` en el módulo `entity`, el `impl Entity`, los `impl`
-/// opcionales (`PartialEq`/`Eq`, `Hash`) y la struct `<Struct>Repository` con sus métodos.
-pub fn derive_entity(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-    let struct_name = &input.ident;
 
-    // Cualquier `syn::Result::Err` en las funciones de parseo se convierte directamente en un
-    // error de compilación con el span del nodo correspondiente, en vez de un `panic!`.
-    macro_rules! bail_on_err {
-        ($expr:expr) => {
-            match $expr {
-                Ok(value) => value,
-                Err(err) => return err.to_compile_error().into(),
-            }
-        };
-    }
 
-    let default_table_name = struct_name.to_string().to_lowercase();
-    let entity_attrs = bail_on_err!(parse_entity_attrs(&input, default_table_name));
+/// Metadatos de un campo "persistente" de la entidad (no transient, no relationship).
+struct FieldInfo {
+    /// Nombre del campo en la struct de Rust.
+    ident: syn::Ident,
+    /// Nombre de la columna en la base de datos (por defecto el nombre en minúsculas).
+    column: String,
+    /// Tipo Rust del campo.
+    ty: syn::Type,
+    /// Identificador de la constante generada para la columna (nombre del campo en mayúsculas).
+    const_ident: syn::Ident,
+    /// Indica si el campo está marcado con `#[primary_key]`.
+    is_id: bool,
+}
 
-    let named_fields = bail_on_err!(get_named_fields(&input));
-    let ParsedFields {
-        fields,
-        has_transient,
-        has_id,
-        relationships,
-    } = bail_on_err!(parse_fields(named_fields));
+/// Valores extraídos del atributo `#[entity(...)]` a nivel de struct.
+struct EntityAttrs {
+    /// Nombre del schema
+    schema_name: String,
+    /// Nombre de la tabla; si no se especifica se usa el nombre de la struct en minúsculas.
+    table_name: String,
+    /// Si es `true`, se genera `impl PartialEq`/`Eq` basado en los campos id.
+    comparable: bool,
+    /// Si es `true`, se genera `impl Hash` basado en los campos id.
+    hashable: bool,
+}
 
-    let repo_ident = format_ident!("{}Repository", struct_name);
+/// Resultado de analizar todos los campos de la struct anotada.
+struct ParsedFields {
+    fields: Vec<FieldInfo>,
+    relationships: Vec<RelationshipDefinition>,
+    /// `true` si existe al menos un campo `#[transient]` o `#[relationship]`, para poder
+    /// completar la instancia con `..Default::default()` al reconstruirla desde una fila.
+    has_transient: bool,
+    /// `true` si existe al menos un campo `#[primary_key]`.
+    has_id: bool,
+}
 
-    bail_on_err!(validate_id_requirements(
-        &input,
-        has_id,
-        entity_attrs.comparable,
-        entity_attrs.hashable
-    ));
+/// Definición de una relación declarada con `#[relationship(...)]` (campo `Option<T>` o `Vec<T>`).
+struct RelationshipDefinition {
+    /// Campo de la struct que almacena la relación.
+    field: syn::Ident,
+    /// `true` si el campo es `Option<T>` (relación a lo sumo 1) o `false` si es `Vec<T>` (a muchos).
+    by_id: bool,
+    /// Tipo `T` de la entidad relacionada.
+    ty: syn::Type,
+    /// Pares (campo local, columna remota) usados para construir la condición de join.
+    joins: Vec<(Ident, Path)>,
+}
 
-    let indexes = bail_on_err!(parse_indexes(&input, &fields));
-    let id_fields: Vec<&FieldInfo> = fields.iter().filter(|f| f.is_id).collect();
-
-    let entity_module = build_entity_module(struct_name, &entity_attrs.table_name, &fields);
-    let entity_trait_impl = build_entity_trait_impl(struct_name, &fields, has_transient);
-    let primary_key_operation = build_primary_key_impl(struct_name, &fields, &id_fields);
-    let repository_primary_key_operation =
-        repository_build_primary_key_impl(struct_name, &id_fields);
-    let indexes_impl = build_indexes_impl(struct_name, &indexes);
-    let comparable_impl = build_comparable_impl(struct_name, entity_attrs.comparable, &id_fields);
-    let hashable_impl = build_hashable_impl(struct_name, entity_attrs.hashable, &id_fields);
-    let relationships_impl = build_entity_with_relationships_trait_impl(relationships);
-
-    let repo_doc = format!("Repository for {}", struct_name);
-    let expanded = quote! {
-        #entity_module
-
-        #entity_trait_impl
-
-        #comparable_impl
-
-        #hashable_impl
-
-        impl #struct_name {
-            #primary_key_operation
-            #relationships_impl
-        }
-
-        #[doc = #repo_doc]
-        pub struct #repo_ident;
-        impl rusqlite_orm::dao::Repository<#struct_name> for #repo_ident{}
-        impl #repo_ident{
-            #indexes_impl
-            #repository_primary_key_operation
-        }
-    };
-
-    expanded.into()
+/// Definición de un índice declarado con `#[indexes(...)]` o `#[uniques(...)]`.
+struct IndexDefinition<'a> {
+    /// Columnas que forman parte del índice y que se reciben como parámetro en las funciones generadas.
+    pub columns: Vec<&'a FieldInfo>,
+    /// Columnas fijadas a un valor literal constante (p. ej. `#[indexes((status = "active"))]`).
+    pub conditions: Vec<(&'a FieldInfo, syn::Lit)>,
+    /// Si es `true` el índice es único y las funciones generadas devuelven `Option` en vez de `Vec`.
+    pub unique: bool,
 }

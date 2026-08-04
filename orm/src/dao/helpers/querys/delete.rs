@@ -46,7 +46,7 @@ where
         &self,
         tx: &crate::rusqlite::Transaction,
     ) -> crate::database::errors::Result<usize> {
-        let mut sentence = format!("DELETE FROM {} ", T::TABLE_NAME);
+        let mut sentence = format!("DELETE FROM {}.{} ", T::SCHEMA, T::TABLE_NAME);
 
         let params: Vec<Value> = Vec::new();
         if let Some(cond) = &self.condition {

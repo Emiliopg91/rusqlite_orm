@@ -7,12 +7,13 @@ use crate::dao::helpers::{
         QueryBuilder, delete::DeleteBuilder, insert::InsertBuilder, select::SelectBuilder,
         update::UpdateBuilder,
     },
-    types::table_name::TableName,
+    types::{schema::Schema, table_name::TableName},
 };
 
 use self::helpers::types::{column_name::ColumnName, value::Value};
 
 pub trait Entity: Sized + 'static {
+    const SCHEMA: &'static Schema<Self>;
     const TABLE_NAME: &'static TableName<Self>;
     const FIELDS: &'static [ColumnName<Self>];
 

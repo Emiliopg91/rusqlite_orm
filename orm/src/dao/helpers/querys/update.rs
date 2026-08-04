@@ -51,7 +51,7 @@ where
         &self,
         tx: &crate::rusqlite::Transaction,
     ) -> crate::database::errors::Result<usize> {
-        let mut sentence = format!("UPDATE {} SET ", T::TABLE_NAME);
+        let mut sentence = format!("UPDATE {}.{} SET ", T::SCHEMA, T::TABLE_NAME);
         sentence.push_str(
             &self
                 .field_values

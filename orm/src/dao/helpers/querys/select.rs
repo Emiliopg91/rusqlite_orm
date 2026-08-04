@@ -68,12 +68,13 @@ where
         tx: &crate::rusqlite::Transaction,
     ) -> crate::database::errors::Result<Vec<T>> {
         let mut sentence = format!(
-            "SELECT {} FROM {}",
+            "SELECT {} FROM {}.{}",
             T::FIELDS
                 .iter()
                 .map(|f| f.as_ref().to_string())
                 .collect::<Vec<String>>()
                 .join(", "),
+            T::SCHEMA,
             T::TABLE_NAME
         );
 
@@ -139,7 +140,7 @@ where
         &self,
         tx: &crate::rusqlite::Transaction,
     ) -> crate::database::errors::Result<i64> {
-        let mut sentence = format!("SELECT COUNT(*) FROM {}", T::TABLE_NAME);
+        let mut sentence = format!("SELECT COUNT(*) FROM {}.{}", T::SCHEMA, T::TABLE_NAME);
 
         let mut params = Vec::new();
         if let Some(condition) = &self.condition {

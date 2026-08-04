@@ -51,7 +51,8 @@ where
         }
 
         sentence.push_str(&format!(
-            "INTO {} ({}) VALUES ",
+            "INTO {}.{} ({}) VALUES ",
+            T::SCHEMA,
             T::TABLE_NAME,
             T::FIELDS
                 .iter()
