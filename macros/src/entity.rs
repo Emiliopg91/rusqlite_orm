@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{ToTokens, format_ident, quote};
+use quote::{format_ident, quote};
 use syn::{
     Data, DeriveInput, Fields, GenericArgument, Ident, Path, PathArguments, Token, Type,
     parenthesized, parse::ParseStream, parse_macro_input, parse_quote, punctuated::Punctuated,
@@ -31,9 +31,9 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     let named_fields = bail_on_err!(get_named_fields(&input));
     let ParsedFields {
         fields,
-        has_transient,
         has_id,
         relationships,
+        transients
     } = bail_on_err!(parse_fields(named_fields));
 
     let repo_ident = format_ident!("{}Repository", struct_name);
@@ -49,7 +49,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     let id_fields: Vec<&FieldInfo> = fields.iter().filter(|f| f.is_id).collect();
 
     let entity_module = build_entity_module(struct_name, &entity_attrs.schema_name, &entity_attrs.table_name, &fields);
-    let entity_trait_impl = build_entity_trait_impl(struct_name, &fields, has_transient);
+    let entity_trait_impl = build_entity_trait_impl(struct_name, &fields, transients);
     let primary_key_operation = build_primary_key_impl(struct_name, &fields, &id_fields);
     let repository_primary_key_operation =
         repository_build_primary_key_impl(struct_name, &id_fields);
@@ -160,15 +160,14 @@ fn get_named_fields(input: &DeriveInput) -> syn::Result<&Punctuated<syn::Field, 
 /// (produce una `RelationshipDefinition` y no se mapea a columna) o campo normal (produce un
 /// `FieldInfo`). También resuelve el nombre de columna a partir de `#[column(name = "...")]`.
 fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<ParsedFields> {
-    let mut has_transient = false;
     let mut has_id = false;
     let mut fields = Vec::new();
     let mut relationships = Vec::new();
+    let mut transients = Vec::new();
 
     for f in named_fields.iter() {
-        let transient = f.attrs.iter().any(|attr| attr.path().is_ident("transient"));
-        if transient {
-            has_transient = true;
+        if f.attrs.iter().any(|attr| attr.path().is_ident("transient")) {
+            transients.push(f.ident.clone().unwrap());
             continue;
         }
 
@@ -185,24 +184,16 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
 
         for attr in &f.attrs {
             if attr.path().is_ident("column") {
-                attr.parse_nested_meta(|meta| {
-                    if meta.path.is_ident("name") {
-                        let lit: syn::LitStr = meta.value()?.parse()?;
-                        column_name = lit.value().trim().to_string();
-                        if column_name.is_empty() {
-                            return Err(meta.error("Attribute name cannot be empty"));
-                        }
-                        Ok(())
-                    } else {
-                        Err(meta
-                            .error("Attribute `column` not recognized, expected `name = \"...\"`"))
-                    }
-                })?;
+                let lit: syn::LitStr = attr.parse_args()?;
+                column_name = lit.value().trim().to_string();
+                if column_name.is_empty() {
+                    return Err(syn::Error::new_spanned(attr, "Attribute name cannot be empty"));
+                }
             } else if attr.path().is_ident("relationship") {
                 // Las relaciones no se persisten como columna propia: se marcan como transient
                 // para que map_from_row las rellene con Default y no se incluyan en get_values.
-                has_transient = true;
                 add = false;
+             transients.push(f.ident.clone().unwrap());
 
                 if let Type::Path(type_path) = &f.ty {
                     // tomamos el ÚLTIMO segmento: soporta Option<T>, std::option::Option<T>, etc.
@@ -273,9 +264,9 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
 
     Ok(ParsedFields {
         fields,
-        has_transient,
         has_id,
         relationships,
+        transients
     })
 }
 
@@ -316,20 +307,60 @@ fn parse_indexes<'a>(
     let mut indexes = Vec::new();
 
     for attr in &input.attrs {
-        if !attr.path().is_ident("indexes") && !attr.path().is_ident("uniques") {
+        if !attr.path().is_ident("index") && !attr.path().is_ident("unique") {
             continue;
         }
 
-        let unique = attr.path().is_ident("uniques");
+        let unique = attr.path().is_ident("unique");
+        let mut name= None;
+        let mut columns = None; 
+        let mut conditions = None; 
 
-        attr.parse_args_with(|input: ParseStream| {
-            while !input.is_empty() {
-                let content;
-                parenthesized!(content in input);
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("name") {
+                if name.is_some() {
+                    return Err(meta.error("Multiple definitions of attribute"))
+                }
+                name = Some(meta.value()?.parse::<syn::LitStr>()?.value());
+                Ok(())
+            } else if meta.path.is_ident("columns") {
+                if columns.is_some() {
+                    return Err(meta.error("Multiple definitions of attribute"))
+                }
 
-                let mut columns = Vec::new();
-                let mut conditions = Vec::new();
+                let content ; 
+                parenthesized!(content in *meta.value()?);
 
+                let mut columns_vec = Vec::new();
+                while !content.is_empty() {
+                    let ident = content.parse::<syn::Ident>()?;
+                    let field = fields.iter().find(|f| f.ident == ident).ok_or_else(|| {
+                        syn::Error::new_spanned(&ident, format!("missing field {}", ident))
+                    })?;
+                    columns_vec.push(field);
+
+                    if !content.is_empty() {
+                        content.parse::<Token![,]>()?;
+                    }
+                }
+
+                if columns_vec.is_empty() {
+                    return Err(meta.error("Index columns cannot be empty"));
+                }
+
+                columns = Some(columns_vec);
+                
+                
+                Ok(())
+            } else if meta.path.is_ident("condition") {
+                if conditions.is_some() {
+                    return Err(meta.error("Multiple definitions of attribute"))
+                }
+
+                let content ; 
+                parenthesized!(content in *meta.value()?);
+
+                let mut conditions_vec = Vec::new();
                 while !content.is_empty() {
                     let ident = content.parse::<syn::Ident>()?;
                     let field = fields.iter().find(|f| f.ident == ident).ok_or_else(|| {
@@ -339,9 +370,9 @@ fn parse_indexes<'a>(
                     if content.peek(Token![=]) {
                         content.parse::<Token![=]>()?;
                         let expr: syn::Lit = content.parse()?;
-                        conditions.push((field, expr));
+                        conditions_vec.push((field, expr));
                     } else {
-                        columns.push(field);
+                        return Err(content.error("Missing = "));
                     }
 
                     if !content.is_empty() {
@@ -349,19 +380,39 @@ fn parse_indexes<'a>(
                     }
                 }
 
-                indexes.push(IndexDefinition {
-                    columns,
-                    conditions,
-                    unique,
-                });
+                if conditions_vec.is_empty() {
+                    return Err(meta.error("Attribute defined empty"));
+                }
 
-                if !input.is_empty() {
-                    input.parse::<Token![,]>()?;
+                conditions = Some(conditions_vec);
+                
+                Ok(())
+            } else{
+                Err(meta.error(format!("Unknown attribute '{}'", meta.path.get_ident().unwrap())))
+            }
+        })?;
+
+        match name {
+            None => {
+                return Err(syn::Error::new_spanned(input, "Missing index name"))
+            }
+            Some ( name ) => match columns {
+                None => {
+                    return Err(syn::Error::new_spanned(input, "Missing index name"))
+                }
+                Some (columns) => {
+                    indexes.push(IndexDefinition {
+                        name,
+                        columns,
+                        conditions,
+                        unique,
+                    });
                 }
             }
+        }
 
-            Ok(())
-        })?;
+        /*
+ */
     }
 
     Ok(indexes)
@@ -408,7 +459,7 @@ fn build_index_condition(
     index: &IndexDefinition,
     value_for: impl Fn(&FieldInfo) -> TokenStream2,
 ) -> TokenStream2 {
-    if index.columns.len() + index.conditions.len() > 1 {
+    if index.columns.len() + index.conditions.clone().unwrap_or_default().len() > 1 {
         let mut cond = Vec::new();
         index.columns.iter().map(|f| {
             let const_ident = &f.const_ident;
@@ -417,14 +468,16 @@ fn build_index_condition(
                 rusqlite_orm::dao::helpers::types::where_clause::Where::Eq(self::entity::columns::#const_ident, #value)
             }
         }).for_each(|t|cond.push(t));
-        index.conditions.iter().map(|c| {
-            let const_ident = &c.0.const_ident;
-            let val = c.1.clone();
-            let value = quote!{#val.into()};
-            quote! {
-                rusqlite_orm::dao::helpers::types::where_clause::Where::Eq(self::entity::columns::#const_ident, #value)
-            }
-        }).for_each(|t|cond.push(t));
+        if let Some(conditions) = &index.conditions {
+            conditions.iter().map(|c| {
+                let const_ident = &c.0.const_ident;
+                let val = c.1.clone();
+                let value = quote!{#val.into()};
+                quote! {
+                    rusqlite_orm::dao::helpers::types::where_clause::Where::Eq(self::entity::columns::#const_ident, #value)
+                }
+            }).for_each(|t|cond.push(t));
+        }
         quote! {
             rusqlite_orm::dao::helpers::types::where_clause::Where::And(vec![
                 #(#cond),*
@@ -433,14 +486,15 @@ fn build_index_condition(
     } else {
         let const_ident;
         let value;
-        if let Some(column) = index.columns.first() {
-            const_ident = &column.const_ident;
-            value = value_for(column);
-        } else {
-            let condition = index.conditions.first().unwrap();
+        if let Some(conditions) = &index.conditions && !conditions.is_empty(){
+            let condition = conditions.first().unwrap();
             const_ident = &condition.0.const_ident;
             let val = condition.1.clone();
             value = quote! {#val.into()};
+        } else {
+            let column  =index.columns.first().unwrap();
+            const_ident = &column.const_ident;
+            value = value_for(column);
         }
 
         quote! {
@@ -520,7 +574,7 @@ fn build_entity_module(
 fn build_entity_trait_impl(
     struct_name: &syn::Ident,
     fields: &[FieldInfo],
-    has_transient: bool,
+    transients: Vec<Ident>,
 ) -> TokenStream2 {
     let field_name_list = fields.iter().map(|f| {
         let ident = &f.const_ident;
@@ -537,11 +591,11 @@ fn build_entity_trait_impl(
 
     // Si hay campos transient/relationship, no vienen en la fila: se completan con su valor
     // por defecto vía `..Default::default()`.
-    let default_spread = if has_transient {
-        quote! { , ..Default::default() }
-    } else {
-        quote! {}
-    };
+    let default_spread = transients.iter().map(|i| 
+        quote!{
+            , #i: Default::default()
+        }
+    );
 
     let get_values_lines = fields.iter().map(|f| {
         let ident = &f.ident;
@@ -568,7 +622,7 @@ fn build_entity_trait_impl(
             fn map_from_row(row: &rusqlite_orm::rusqlite::Row) -> Result<Self, rusqlite_orm::rusqlite::Error> {
                 Ok(Self {
                     #(#map_from_rows_lines),*
-                    #default_spread
+                    #(#default_spread)*
                 })
             }
 
@@ -801,32 +855,18 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
     }
 
     let indexes_expand = indexes.iter().map(|index| {
-        let mut fn_name = format_ident!(
+        let fn_name = format_ident!(
             "select_by_{}",
-            &index.columns.iter().map(|i| i.ident.to_string()).collect::<Vec<String>>().join("_and_"),
+            index.name,
         );
-        let mut fn_name_count = format_ident!(
-            "{}_by_{}",
-            if index.unique {"exists"} else {"count"},
-            &index.columns.iter().map(|i| i.ident.to_string()).collect::<Vec<String>>().join("_and_"),
-        );
-
-        // Si el índice tiene condiciones fijas (col = literal), se añade un sufijo al nombre de
-        // la función con el valor literal saneado (sin comillas ni espacios) para que sea un
-        // identificador Rust válido, p. ej. `select_by_user_id_where_status_eq_active`.
-        if !index.conditions.is_empty(){
-            let sufix = format!("where_{}",
-                index.conditions.iter().map(|c|{
-                    format!("{}_eq_{}",c.0.ident, c.1.to_token_stream())
-                }).collect::<Vec<String>>().join("_and_").replace("\"","").replace("'","").replace(" ","_")
-            );
-            fn_name = format_ident!("{}_{}",fn_name, sufix);
-            fn_name_count = format_ident!("{}_{}",fn_name_count, sufix);
-        }
-
         let fn_name_tx = format_ident!(
             "{}_in_tx",
             fn_name,
+        );
+        let fn_name_count = format_ident!(
+            "{}_by_{}",
+            if index.unique {"exists"} else {"count"},
+            index.name,
         );
         let fn_name_count_tx = format_ident!(
             "{}_in_tx",
@@ -1036,10 +1076,8 @@ struct EntityAttrs {
 /// Resultado de analizar todos los campos de la struct anotada.
 struct ParsedFields {
     fields: Vec<FieldInfo>,
+    transients: Vec<Ident>,
     relationships: Vec<RelationshipDefinition>,
-    /// `true` si existe al menos un campo `#[transient]` o `#[relationship]`, para poder
-    /// completar la instancia con `..Default::default()` al reconstruirla desde una fila.
-    has_transient: bool,
     /// `true` si existe al menos un campo `#[primary_key]`.
     has_id: bool,
 }
@@ -1058,10 +1096,12 @@ struct RelationshipDefinition {
 
 /// Definición de un índice declarado con `#[indexes(...)]` o `#[uniques(...)]`.
 struct IndexDefinition<'a> {
+    /// Nombre del indice
+    pub name: String,
     /// Columnas que forman parte del índice y que se reciben como parámetro en las funciones generadas.
     pub columns: Vec<&'a FieldInfo>,
     /// Columnas fijadas a un valor literal constante (p. ej. `#[indexes((status = "active"))]`).
-    pub conditions: Vec<(&'a FieldInfo, syn::Lit)>,
+    pub conditions: Option<Vec<(&'a FieldInfo, syn::Lit)>>,
     /// Si es `true` el índice es único y las funciones generadas devuelven `Option` en vez de `Vec`.
     pub unique: bool,
 }
