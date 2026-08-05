@@ -312,95 +312,68 @@ fn parse_indexes<'a>(
         }
 
         let unique = attr.path().is_ident("unique");
-        let mut name= None;
-        let mut columns = None; 
-        let mut conditions = None; 
 
-        attr.parse_nested_meta(|meta| {
-            if meta.path.is_ident("name") {
-                if name.is_some() {
-                    return Err(meta.error("Multiple definitions of attribute"))
+        attr.parse_args_with(|input: ParseStream|{
+            match input.parse::<syn::LitStr>() {
+                Err(_)=> {
+                    return Err(syn::Error::new_spanned(attr, "First argument must be a string literal for name"));
                 }
-                name = Some(meta.value()?.parse::<syn::LitStr>()?.value());
-                Ok(())
-            } else if meta.path.is_ident("columns") {
-                if columns.is_some() {
-                    return Err(meta.error("Multiple definitions of attribute"))
-                }
+                Ok(name_lit) => {
+                    let name = name_lit.value();
 
-                let content ; 
-                parenthesized!(content in *meta.value()?);
+                    input.parse::<Token![,]>()?;
 
-                let mut columns_vec = Vec::new();
-                while !content.is_empty() {
-                    let ident = content.parse::<syn::Ident>()?;
-                    let field = fields.iter().find(|f| f.ident == ident).ok_or_else(|| {
-                        syn::Error::new_spanned(&ident, format!("missing field {}", ident))
-                    })?;
-                    columns_vec.push(field);
+                    let mut columns = Vec::new();
 
-                    if !content.is_empty() {
-                        content.parse::<Token![,]>()?;
+                    let content ; 
+                    parenthesized!(content in input);
+                    while !content.is_empty() {
+                        let ident = content.parse::<syn::Ident>()?;
+                        let field = fields.iter().find(|f| f.ident == ident).ok_or_else(|| {
+                            syn::Error::new_spanned(&ident, format!("missing field {}", ident))
+                        })?;
+                        columns.push(field);
+
+                        if !content.is_empty() {
+                            content.parse::<Token![,]>()?;
+                        }
                     }
-                }
-
-                if columns_vec.is_empty() {
-                    return Err(meta.error("Index columns cannot be empty"));
-                }
-
-                columns = Some(columns_vec);
-                
-                
-                Ok(())
-            } else if meta.path.is_ident("condition") {
-                if conditions.is_some() {
-                    return Err(meta.error("Multiple definitions of attribute"))
-                }
-
-                let content ; 
-                parenthesized!(content in *meta.value()?);
-
-                let mut conditions_vec = Vec::new();
-                while !content.is_empty() {
-                    let ident = content.parse::<syn::Ident>()?;
-                    let field = fields.iter().find(|f| f.ident == ident).ok_or_else(|| {
-                        syn::Error::new_spanned(&ident, format!("missing field {}", ident))
-                    })?;
-
-                    if content.peek(Token![=]) {
-                        content.parse::<Token![=]>()?;
-                        let expr: syn::Lit = content.parse()?;
-                        conditions_vec.push((field, expr));
-                    } else {
-                        return Err(content.error("Missing = "));
+                    if columns.is_empty() {
+                        return Err(content.error("Index columns cannot be empty"));
                     }
 
-                    if !content.is_empty() {
-                        content.parse::<Token![,]>()?;
+                    let mut conditions = None;
+
+                    if input.parse::<Token![,]>().is_ok() {
+                        let content ; 
+                        parenthesized!(content in input);
+                        let mut conditions_vec = Vec::new();
+                        while !content.is_empty() {
+                            let ident = content.parse::<syn::Ident>()?;
+                            let field = fields.iter().find(|f| f.ident == ident).ok_or_else(|| {
+                                syn::Error::new_spanned(&ident, format!("missing field {}", ident))
+                            })?;
+
+                            if content.peek(Token![=]) {
+                                content.parse::<Token![=]>()?;
+                                let expr: syn::Lit = content.parse()?;
+                                conditions_vec.push((field, expr));
+                            } else {
+                                return Err(content.error("Missing = "));
+                            }
+
+                            if !content.is_empty() {
+                                content.parse::<Token![,]>()?;
+                            }
+                        }
+
+                        if conditions_vec.is_empty() {
+                            return Err(content.error("Conditions defined empty"));
+                        }
+
+                        conditions = Some(conditions_vec);
                     }
-                }
 
-                if conditions_vec.is_empty() {
-                    return Err(meta.error("Attribute defined empty"));
-                }
-
-                conditions = Some(conditions_vec);
-                
-                Ok(())
-            } else{
-                Err(meta.error(format!("Unknown attribute '{}'", meta.path.get_ident().unwrap())))
-            }
-        })?;
-
-        match name {
-            None => {
-                return Err(syn::Error::new_spanned(input, "Missing index name"))
-            }
-            Some ( name ) => match columns {
-                None => {
-                    return Err(syn::Error::new_spanned(input, "Missing index name"))
-                }
-                Some (columns) => {
                     indexes.push(IndexDefinition {
                         name,
                         columns,
@@ -409,10 +382,8 @@ fn parse_indexes<'a>(
                     });
                 }
             }
-        }
-
-        /*
- */
+            Ok(())
+        })?;
     }
 
     Ok(indexes)
@@ -882,11 +853,10 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
 
         let repo_ident = format_ident!("{}Repository", struct_name);
 
-        let  idx_col_names= index.columns.iter().map(|i| i.ident.to_string()).collect::<Vec<String>>().join(", ");
         let idx_col_names_idents = index.columns.iter().map(|i| i.ident.clone()).collect::<Vec<syn::Ident>>();
-        let doc1=format!("Fetch row{} by {} index", if index.unique {""} else {"s"}, idx_col_names);
+        let doc1=format!("Fetch row{} by {} index", if index.unique {""} else {"s"}, index.name);
         let doc2=format!("{} in transaction", doc1);
-        let doc3=format!("{} by {} index", if index.unique {"Exists"} else {"Count rows"}, idx_col_names);
+        let doc3=format!("{} by {} index", if index.unique {"Exists"} else {"Count rows"}, index.name);
         let doc4=format!("{} in transaction", doc3);
 
         // Un índice único devuelve como mucho una fila, así que ordenar no tiene sentido:
