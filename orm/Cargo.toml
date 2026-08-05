@@ -1,6 +1,6 @@
 [package]
 name = "rusqlite_orm"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2024"
 description = "ORM for rusqlite"
 repository = "https://github.com/Emiliopg91/rusqlite_orm/orm"

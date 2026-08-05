@@ -21,8 +21,8 @@ This repository is a Cargo workspace made up of two crates:
 - **Generated convenience methods** for entities with `#[primary_key]` field(s):
   - on the **repository**: `exists`, `select_by_id` (and `_in_tx` variants);
   - on the **entity instance** itself: `update_by_id`, `delete_by_id` (and `_in_tx` variants).
-- **Generated index lookups** — declare `#[indexes((col_a, col_b), (col_c))]` on the struct to get, on the repository, `select_by_col_a_and_col_b(...)` / `select_by_col_c(...)` plus their `count_by_*` and `_in_tx` counterparts.
-- **Generated unique-index lookups** — `#[uniques((col_d), (col_e, col_f))]` uses the same syntax as `#[indexes(...)]`, but each generated `select_by_*` returns `Option<Self>` (at most one row) instead of `Vec<Self>`, and has no `order_by` parameter.
+- **Generated index lookups** — declare `#[index("name", (col_a, col_b))]` on the struct (repeatable) to get, on the repository, `select_by_name(...)` plus its `count_by_name` and `_in_tx` counterparts.
+- **Generated unique-index lookups** — `#[unique("name", (col_d, col_e))]` uses the same syntax as `#[index(...)]`, but the generated `select_by_name` returns `Option<Self>` (at most one row) instead of `Vec<Self>`, has no `order_by` parameter, and its count counterpart is `exists_by_name` returning `bool`.
 - **Relationships between entities** — annotate an `Option<T>` or `Vec<T>` field with `#[relationship((local_field, remote_column), ...)]` to get `fetch_<field>_relationship` / `fetch_<field>_relationship_in_tx` instance methods that lazily load the related row(s).
 - **Optional derived `PartialEq` / `Eq` / `Hash`** based on the entity's id column(s), via `comparable` / `hashable` attribute flags.
 - **Fields excluded from the schema** with `#[dont_map]`, populated via `Default::default()` when mapping rows back (requires the struct to implement `Default`). Relationship fields are excluded automatically the same way.
@@ -52,7 +52,7 @@ use rusqlite_orm_macros::Entity;
 
 #[derive(Entity, Debug, Clone, Default)]
 #[entity(table = "users", comparable = true, hashable = true)]
-#[indexes((email))]
+#[index("email", (email))]
 pub struct User {
     #[primary_key]
     pub id: i64,
@@ -71,10 +71,10 @@ This expands into:
 - `user.update_by_id()` / `user.delete_by_id()` **instance methods** on `User` (because the struct has a `#[primary_key]` field), each with an `_in_tx` counterpart,
 - a `UserRepository` unit struct implementing `rusqlite_orm::dao::Repository<User>`, with:
   - `UserRepository::exists(id)` / `UserRepository::select_by_id(id)` (and `_in_tx` variants),
-  - `UserRepository::select_by_email(email, order_by)` and `UserRepository::count_by_email(email)` (because of the `#[indexes((email))]` attribute), plus their `_in_tx` variants,
+  - `UserRepository::select_by_email(email, order_by)` and `UserRepository::count_by_email(email)` (because of the `#[index("email", (email))]` attribute), plus their `_in_tx` variants,
 - `PartialEq` / `Eq` and `Hash` implementations for `User` based on `id` (because `comparable` and `hashable` are set to `true`).
 
-`#[uniques(...)]` works exactly like `#[indexes(...)]` but marks a column group as unique. For example, adding `#[uniques((email))]` to `User` above generates `UserRepository::select_by_email(email)` returning `Option<User>` (no `order_by` parameter, since a unique group matches at most one row) and `UserRepository::count_by_email(email)`, plus their `_in_tx` variants. A group can also mix variable columns with fixed conditions, e.g. `#[uniques((tenant_id, username), (email))]`. Note that the attribute only generates the lookup helpers — it does **not** create a `UNIQUE` constraint in the database; that still needs to be declared in your DDL. See [`macros/README.md`](../macros/README.md#indexes-and-unique-indexes) for the full syntax.
+`#[unique(...)]` works exactly like `#[index(...)]` but marks the index as unique. For example, replacing the attribute above with `#[unique("email", (email))]` generates `UserRepository::select_by_email(email)` returning `Option<User>` (no `order_by` parameter, since a unique index matches at most one row) and `UserRepository::exists_by_email(email)`, plus their `_in_tx` variants. An index can also mix variable columns with fixed conditions, e.g. `#[unique("active_tenant_username", (tenant_id, username), (status = "active"))]`. Note that the attribute only generates the lookup helpers — it does **not** create a `UNIQUE` constraint in the database; that still needs to be declared in your DDL. See [`macros/README.md`](../macros/README.md#indexes-and-unique-indexes) for the full syntax.
 
 `#[dont_map]` fields are skipped when building `INSERT`/`SELECT` column lists and are restored to their `Default` value when a row is mapped back into the struct.
 

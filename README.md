@@ -18,7 +18,7 @@ This repository is a Cargo workspace made up of two crates:
 - **Rich `WHERE` clauses** — `Eq`, `NotEq`, `Gt`, `Lt`, `In`, `InMultiple` (tuple `IN`), `Null`, `NotNull`, combinable with `And` / `Or`.
 - **Ordering & limits** — `OrderBy::Asc` / `OrderBy::Desc` and `.limit(n)`.
 - **Generated convenience methods** for entities with an `#[primary_key]` field: `select_by_id`, `update_by_id`, `delete_by_id` (and `_in_tx` variants for running inside an existing transaction).
-- **Generated index lookups** — declare `#[indexes((col_a, col_b), (col_c))]` on the struct to get `select_by_col_a_and_col_b(...)` / `select_by_col_c(...)` helpers.
+- **Generated index lookups** — declare `#[index("name", (col_a, col_b))]` on the struct to get a `select_by_name(...)` helper (the attribute can be repeated for multiple indexes).
 - **Optional derived `PartialEq` / `Eq` / `Hash`** based on the entity's id column(s), via `comparable` / `hasheable` attribute flags.
 - **Fields excluded from the schema** with `#[no_column]`, populated via `Default::default()` when mapping rows back (requires the struct to implement `Default`).
 - **Transaction support** — every query builder exposes both a "managed" method (`fetch`, `execute`, ...) that opens its own transaction against a global connection, and an `_in_tx` counterpart for composing multiple statements atomically.
@@ -47,7 +47,7 @@ use rusqlite_orm_macros::Entity;
 
 #[derive(Entity, Debug, Clone, Default)]
 #[entity(table = "users", comparable = true, hasheable = true)]
-#[indexes((email))]
+#[index("email", (email))]
 pub struct User {
     #[primary_key]
     pub id: i64,
@@ -64,7 +64,7 @@ This expands into:
 - an `entity::columns` module with a typed constant per persisted column (`entity::columns::ID`, `entity::columns::EMAIL_ADDRESS`, `entity::columns::NAME`),
 - an implementation of the `Entity` trait (`TABLE_NAME`, `FIELDS`, `map_from_row`, `get_values`),
 - `User::select_by_id(id)`, `.update_by_id()`, `.delete_by_id()` (because the struct has an `#[primary_key]` field), each with an `_in_tx` counterpart,
-- `User::select_by_email(email, order_by)` (because of the `#[indexes((email))]` attribute),
+- `User::select_by_email(email, order_by)` (because of the `#[index("email", (email))]` attribute),
 - `PartialEq` / `Eq` and `Hash` implementations based on `id` (because `comparable` and `hasheable` are set to `true`).
 
 `#[no_column]` fields are skipped when building `INSERT`/`SELECT` column lists and are restored to their `Default` value when a row is mapped back into the struct.
