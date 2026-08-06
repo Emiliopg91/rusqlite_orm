@@ -1,3 +1,5 @@
+use std::ops::Index;
+
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
@@ -28,7 +30,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         has_id,
         relationships,
         transients
-    } = bail_on_err!(parse_fields(named_fields));
+    } = bail_on_err!(parse_fields(&input, named_fields));
 
     let repo_ident = format_ident!("{}Repository", struct_name);
 
@@ -95,29 +97,36 @@ fn parse_entity_attrs(input: &DeriveInput, default_table_name: String) -> syn::R
         if already_found {
             return Err(syn::Error::new_spanned(attr, "Duplicated attribute 'entity'"))
         }
+        
 
         already_found=true;
+
+        if let Ok(table_name_lit) = attr.parse_args::<syn::LitStr>() {
+            table_name = table_name_lit.value();
+            continue
+        }
+
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("schema") {
-                let lit: syn::LitStr = meta.value()?.parse()?;
+                let lit = meta.value()?.parse::<syn::LitStr>()?;
                 schema_name = lit.value().trim().to_string();
                 if schema_name.is_empty() {
                     return Err(meta.error("Attribute schema cannot be empty"));
                 }
                 Ok(())
             } else if meta.path.is_ident("table") {
-                let lit: syn::LitStr = meta.value()?.parse()?;
+                let lit = meta.value()?.parse::<syn::LitStr>()?;
                 table_name = lit.value().trim().to_string();
                 if table_name.is_empty() {
                     return Err(meta.error("Attribute table cannot be empty"));
                 }
                 Ok(())
             } else if meta.path.is_ident("comparable") {
-                let lit: syn::LitBool = meta.value()?.parse()?;
+                let lit = meta.value()?.parse::<syn::LitBool>()?;
                 comparable = lit.value();
                 Ok(())
             } else if meta.path.is_ident("hashable") {
-                let lit: syn::LitBool = meta.value()?.parse()?;
+                let lit = meta.value()?.parse::<syn::LitBool>()?;
                 hashable = lit.value();
                 Ok(())
             } else {
@@ -152,11 +161,31 @@ fn get_named_fields(input: &DeriveInput) -> syn::Result<&Punctuated<syn::Field, 
     }
 }
 
-fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<ParsedFields> {
+fn parse_fields(input: &DeriveInput, named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<ParsedFields> {
     let mut has_id = false;
     let mut fields: Vec<FieldInfo> = Vec::new();
     let mut relationships = Vec::new();
     let mut transients = Vec::new();
+    let mut id_fields = Vec::new();
+
+    for attr in &input.attrs{
+        if attr.path().is_ident("primary_key") {
+            attr.parse_args_with(|input: ParseStream| {
+                while !input.is_empty() {
+                    let id_field = input.parse::<syn::Ident>()?;
+                    id_fields.push(id_field);
+
+                    if input.peek(Token![,]){
+                        input.parse::<Token![,]>()?;
+                    }
+                }
+
+                Ok(())
+            })?;
+
+            break;
+        }
+    }
 
     for f in named_fields.iter() {
         if f.attrs.iter().any(|attr| attr.path().is_ident("transient"))
@@ -172,17 +201,19 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
         let ident = f.ident.clone().unwrap();
         let name = ident.to_string();
         let const_ident = format_ident!("{}", name.to_uppercase());
-        let is_id = f
-            .attrs
-            .iter()
-            .any(|attr| attr.path().is_ident("primary_key"));
+        let is_id= if let Some(idx) = id_fields.iter().position(|x|*x==ident){
+            id_fields.remove(idx);
+            true
+        } else{
+            false
+        };
         has_id = has_id || is_id;
         let mut column_name = name.to_lowercase();
         let mut add = true;
 
         for attr in &f.attrs {
             if attr.path().is_ident("column") {
-                let lit: syn::LitStr = attr.parse_args()?;
+                let lit = attr.parse_args::<syn::LitStr>()?;
                 column_name = lit.value().trim().to_string();
                 if column_name.is_empty() {
                     return Err(syn::Error::new_spanned(attr, "Attribute name cannot be empty"));
@@ -268,6 +299,10 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
                 is_id,
             });
         }
+    }
+
+    if let Some(unknown_field) = id_fields.first() {
+        return Err(syn::Error::new_spanned(unknown_field, "Field not found in struct"));
     }
 
     Ok(ParsedFields {
@@ -662,7 +697,7 @@ fn build_entity_with_relationships_trait_impl(
                 #[doc = #doc]
                 pub fn #fn_name(&mut self) -> rusqlite_orm::database::errors::Result<()>{
                     let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                    db.run_in_tx(|tx| self.#fn_name_tx(tx))
+                    db.run_in_tx(|tx| Ok(self.#fn_name_tx(tx)?))
                 }
 
                 #[doc = #doc_tx]
@@ -716,7 +751,7 @@ fn build_primary_key_impl(
             #[doc = "Update row by primary key"]
             pub fn update_by_id(&self) -> rusqlite_orm::database::errors::Result<()> {
                 let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| self.update_by_id_in_tx(tx))
+                db.run_in_tx(|tx| Ok(self.update_by_id_in_tx(tx)?))
             }
 
             #[doc = "Update row by primary key in transaction"]
@@ -734,7 +769,7 @@ fn build_primary_key_impl(
             #[doc = "Delete row by primary key"]
             pub fn delete_by_id(&self) -> rusqlite_orm::database::errors::Result<()> {
                 let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| self.delete_by_id_in_tx(tx))
+                db.run_in_tx(|tx| Ok(self.delete_by_id_in_tx(tx)?))
             }
 
             #[doc = "Delete row by primary key in transaction"]
@@ -774,7 +809,7 @@ fn repository_build_primary_key_impl(
                 #(#by_id_params),*
             ) -> rusqlite_orm::database::errors::Result<bool> {
                 let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Self::exists_in_tx(tx, #id_condition_names))
+                db.run_in_tx(|tx| Ok(Self::exists_in_tx(tx, #id_condition_names)?))
             }
             #[doc = "Checks if row exists in transaction"]
             pub fn exists_in_tx(
@@ -792,7 +827,7 @@ fn repository_build_primary_key_impl(
                 #(#by_id_params),*
             ) -> rusqlite_orm::database::errors::Result<Option<#struct_name>> {
                 let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Self::select_by_id_in_tx(tx, #id_condition_names))
+                db.run_in_tx(|tx| Ok(Self::select_by_id_in_tx(tx, #id_condition_names)?))
             }
 
             #[doc = "Fetch row by primary key in transaction"]
@@ -916,7 +951,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             #[doc = #doc1]
             pub fn #fn_name(#(#select_params),* #order_by_arg) -> rusqlite_orm::database::errors::Result<#ret_type> {
                 let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Self::#fn_name_tx(tx, #(#idx_col_names_idents),* #order_by_param))
+                db.run_in_tx(|tx| Ok(Self::#fn_name_tx(tx, #(#idx_col_names_idents),* #order_by_param)?))
             }
 
             #[doc = #doc2]
@@ -930,7 +965,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             #[doc = #doc3]
             pub fn #fn_name_count(#(#select_params),*) -> rusqlite_orm::database::errors::Result<#cnt_ret_type> {
                 let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Self::#fn_name_count_tx(tx, #(#idx_col_names_idents),*))
+                db.run_in_tx(|tx| Ok(Self::#fn_name_count_tx(tx, #(#idx_col_names_idents),*)?))
             }
 
             #[doc = #doc4]

@@ -11,11 +11,11 @@ Generates the boilerplate needed to treat a struct as a database entity.
 ```rust
 #[derive(Entity, Debug, Clone, Default)]
 #[entity(table = "users", comparable = true, hashable = true)]
+#[primary_key(id)]
 #[index("email", (email))]
 pub struct User {
-    #[primary_key]
     pub id: i64,
-    #[column(name = "email_address")]
+    #[column("email_address")]
     pub email: String,
     pub name: String,
     #[transient]
@@ -27,9 +27,12 @@ pub struct User {
 
 | Attribute                             | Effect                                                                                                                                                     |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `#[entity("...")]`                    | Shorthand for `#[entity(table = "...")]`. Cannot be combined with `schema`/`comparable`/`hashable` — use the `table = "..."` form for that.                |
 | `#[entity(table = "...")]`            | Overrides the SQL table name (defaults to the struct name, lowercased).                                                                                    |
-| `#[entity(comparable = true)]`        | Derives `PartialEq`/`Eq` comparing only the `#[primary_key]` field(s). Requires at least one `#[primary_key]` field.                                       |
-| `#[entity(hashable = true)]`          | Derives `Hash` based only on the `#[primary_key]` field(s). Requires at least one `#[primary_key]` field.                                                  |
+| `#[entity(schema = "...")]`           | Overrides the SQL schema name (defaults to `"main"`).                                                                                                      |
+| `#[entity(comparable = true)]`        | Derives `PartialEq`/`Eq` comparing only the `#[primary_key(...)]` field(s). Requires a `#[primary_key(...)]` attribute.                                    |
+| `#[entity(hashable = true)]`          | Derives `Hash` based only on the `#[primary_key(...)]` field(s). Requires a `#[primary_key(...)]` attribute.                                               |
+| `#[primary_key(field_a, field_b, ...)]` | Struct-level attribute marking the listed fields as the primary key. Gets you, on the repository, `select_by_id`/`exists`, and on the entity instance, `update_by_id`/`delete_by_id` (each with an `_in_tx` variant). Multiple fields are combined with `AND`. Referencing a field that doesn't exist on the struct is a compile error. |
 | `#[index("name", (col_a, col_b))]`    | Generates `select_by_name(..., order_by)` (and `_in_tx`/`count_by_name`/`count_by_name_in_tx` variants) for the given column group. Can be repeated for multiple indexes. Returns `Vec<Self>`. |
 | `#[unique("name", (col_d, col_e))]`   | Same syntax as `#[index(...)]`, but for a column group that is unique. Generates `select_by_name(...)` (and `_in_tx`/`exists_by_name`/`exists_by_name_in_tx` variants) returning `Option<Self>` instead of `Vec<Self>`, and without an `order_by` parameter (see [Indexes and unique indexes](#indexes-and-unique-indexes) below). |
 
@@ -37,8 +40,7 @@ pub struct User {
 
 | Attribute                                            | Effect                                                                                                                                                                                                                                             |
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `#[primary_key]`                                     | Marks the field as (part of) the primary key. Any struct with one or more `#[primary_key]` fields gets `select_by_id`, `exists`, `update_by_id`, `delete_by_id` (and `_in_tx` variants). Multiple `#[primary_key]` fields are combined with `AND`. |
-| `#[column(name = "...")]`                            | Overrides the column name (defaults to the field name, lowercased).                                                                                                                                                                                |
+| `#[column("...")]`                                   | Overrides the column name (defaults to the field name, lowercased).                                                                                                                                                                                |
 | `#[transient]`                                       | Excludes the field from `INSERT`/`SELECT` column lists entirely. When mapping a row back into the struct, this field is filled in via `Default::default()` — the struct must implement `Default`.                                                  |
 | `#[relationship((local_field, remote_column), ...)]` | Declares the field as a related entity rather than a persisted column (see [Relationships](#relationships) below).                                                                                                                                 |
 
@@ -47,7 +49,7 @@ pub struct User {
 - `mod entity { pub mod columns { ... } }` — a typed `ColumnName<Self>` constant for every persisted field, named after the field in upper case (e.g. `entity::columns::EMAIL_ADDRESS`), plus `entity::TABLE`.
 - An `impl rusqlite_orm::dao::Entity for YourStruct` providing `TABLE_NAME`, `FIELDS`, `map_from_row`, and `get_values`.
 - A `YourStructRepository` struct implementing `rusqlite_orm::dao::Repository<YourStruct>`.
-- `exists` / `select_by_id` / `update_by_id` / `delete_by_id` (+ `_in_tx`) when the struct has `#[primary_key]` field(s).
+- `exists` / `select_by_id` / `update_by_id` / `delete_by_id` (+ `_in_tx`) when the struct has a `#[primary_key(...)]` attribute.
 - `select_by_<name>` / `count_by_<name>` (or `exists_by_<name>` for `#[unique(...)]`) (+ `_in_tx`) for every index declared with `#[index(...)]` or `#[unique(...)]`.
 - `PartialEq`/`Eq` and/or `Hash` impls when `comparable`/`hashable` are enabled.
 - `fetch_<field>_relationship` / `fetch_<field>_relationship_in_tx` for every field annotated with `#[relationship(...)]`.
@@ -59,12 +61,12 @@ pub struct User {
 ```rust
 #[derive(Entity, Debug, Clone, Default)]
 #[entity(table = "users")]
+#[primary_key(id)]
 #[index("last_name", (last_name))]
 #[unique("email", (email))]
 #[unique("tenant_username", (tenant_id, username))]
 #[unique("active_by_tenant", (tenant_id), (status = "active"))]
 pub struct User {
-    #[primary_key]
     pub id: i64,
     pub tenant_id: i64,
     pub username: String,
@@ -108,8 +110,8 @@ A field annotated with `#[relationship(...)]` doesn't map to a column in `TABLE_
 ```rust
 #[derive(Entity, Debug, Clone, Default)]
 #[entity(table = "posts")]
+#[primary_key(id)]
 pub struct Post {
-    #[primary_key]
     pub id: i64,
     pub user_id: i64,
     pub title: String,

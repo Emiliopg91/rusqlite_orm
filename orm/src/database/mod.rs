@@ -50,16 +50,17 @@ impl Database {
 
     pub fn run_in_tx<F, R>(&mut self, mut f: F) -> Result<R>
     where
-        F: FnMut(&mut Transaction) -> Result<R>,
+        F: FnMut(&mut Transaction) -> std::result::Result<R, Box<dyn std::error::Error>>,
     {
         if let Some(connection) = self.connection.as_mut() {
             let mut tx = connection
                 .transaction()
-                .map_err(DatabaseError::Transaction)?;
+                .map_err(|e| DatabaseError::Transaction(Box::new(e)))?;
 
-            let res = f(&mut tx)?;
+            let res = f(&mut tx).map_err(DatabaseError::Transaction)?;
 
-            tx.commit().map_err(DatabaseError::Transaction)?;
+            tx.commit()
+                .map_err(|e| DatabaseError::Transaction(Box::new(e)))?;
 
             Ok(res)
         } else {
@@ -68,7 +69,7 @@ impl Database {
     }
 
     pub fn create_schema(&mut self, ddls: &[DdlVersion]) -> Result<()> {
-        self.run_in_tx(|tx| {
+        let updated = self.run_in_tx(|tx| {
             let current_vers: u16 = tx
                 .pragma_query_value(None, "user_version", |r| r.get(0))
                 .map_err(DatabaseError::SchemaCreation)?;
@@ -94,8 +95,23 @@ impl Database {
                 debug!("Database updated succesfully");
             }
 
+            Ok(!updates.is_empty())
+        })?;
+
+        if updated {
+            debug!("Schema updated, running VACUUM to reclaim space...");
+
+            if let Some(connection) = self.connection.as_mut() {
+                connection
+                    .execute("VACUUM", [])
+                    .map_err(DatabaseError::SchemaCreation)
+                    .map(|_| ())
+            } else {
+                Err(DatabaseError::ClosedConnection())
+            }
+        } else {
             Ok(())
-        })
+        }
     }
 }
 

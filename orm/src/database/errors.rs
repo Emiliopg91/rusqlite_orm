@@ -11,7 +11,7 @@ pub enum DatabaseError {
     #[error("Error while creating schema: {0}")]
     SchemaCreation(crate::rusqlite::Error),
     #[error("Error on transaction: {0}")]
-    Transaction(crate::rusqlite::Error),
+    Transaction(Box<dyn std::error::Error>),
     #[error("Error on insert: {0}")]
     Insert(crate::rusqlite::Error),
     #[error("Error on update: {0}")]
