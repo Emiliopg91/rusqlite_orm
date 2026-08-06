@@ -105,7 +105,9 @@ where
         }
 
         Self::log_query_start(&sentence, &params);
-        let mut stmt = tx.prepare(&sentence).map_err(DatabaseError::Select)?;
+        let mut stmt = tx
+            .prepare_cached(&sentence)
+            .map_err(DatabaseError::Select)?;
         let rows = stmt
             .query_map(params_from_iter(params.iter()), T::map_from_row)
             .map_err(DatabaseError::Select)?;
