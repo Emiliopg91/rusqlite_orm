@@ -6,16 +6,10 @@ use syn::{
     parenthesized, parse::ParseStream, parse_macro_input, parse_quote, punctuated::Punctuated,
 };
 
-
-/// Punto de entrada del `#[derive(Entity)]`: orquesta el parseo de atributos/campos/índices y
-/// combina la salida de cada `build_*` en el módulo `entity`, el `impl Entity`, los `impl`
-/// opcionales (`PartialEq`/`Eq`, `Hash`) y la struct `<Struct>Repository` con sus métodos.
 pub fn derive_entity(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     let struct_name = &input.ident;
 
-    // Cualquier `syn::Result::Err` en las funciones de parseo se convierte directamente en un
-    // error de compilación con el span del nodo correspondiente, en vez de un `panic!`.
     macro_rules! bail_on_err {
         ($expr:expr) => {
             match $expr {
@@ -86,32 +80,36 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
 }
 
 
-/// Lee el atributo `#[entity(table = "...", comparable = bool, hashable = bool)]` de la struct.
-/// Cualquier clave distinta de `table`/`comparable`/`hashable` produce un error de compilación.
 fn parse_entity_attrs(input: &DeriveInput, default_table_name: String) -> syn::Result<EntityAttrs> {
     let mut schema_name = "main".to_string();
     let mut table_name = default_table_name;
     let mut comparable = false;
     let mut hashable = false;
+    let mut already_found=false;
 
     for attr in &input.attrs {
         if !attr.path().is_ident("entity") {
             continue;
         }
 
+        if already_found {
+            return Err(syn::Error::new_spanned(attr, "Duplicated attribute 'entity'"))
+        }
+
+        already_found=true;
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("schema") {
                 let lit: syn::LitStr = meta.value()?.parse()?;
                 schema_name = lit.value().trim().to_string();
                 if schema_name.is_empty() {
-                    return Err(meta.error("Attribute table cannot be empty"));
+                    return Err(meta.error("Attribute schema cannot be empty"));
                 }
                 Ok(())
             } else if meta.path.is_ident("table") {
                 let lit: syn::LitStr = meta.value()?.parse()?;
                 table_name = lit.value().trim().to_string();
                 if table_name.is_empty() {
-                    return Err(meta.error("Attribute schema cannot be empty"));
+                    return Err(meta.error("Attribute table cannot be empty"));
                 }
                 Ok(())
             } else if meta.path.is_ident("comparable") {
@@ -138,8 +136,6 @@ fn parse_entity_attrs(input: &DeriveInput, default_table_name: String) -> syn::R
     })
 }
 
-/// Extrae los campos con nombre de la struct de entrada; falla si `derive(Entity)` se aplica
-/// sobre algo distinto de una struct con campos nombrados (enums, tuplas, unit structs, etc.).
 fn get_named_fields(input: &DeriveInput) -> syn::Result<&Punctuated<syn::Field, Token![,]>> {
     match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -156,16 +152,18 @@ fn get_named_fields(input: &DeriveInput) -> syn::Result<&Punctuated<syn::Field, 
     }
 }
 
-/// Clasifica cada campo de la struct en: transient (ignorado por la persistencia), relationship
-/// (produce una `RelationshipDefinition` y no se mapea a columna) o campo normal (produce un
-/// `FieldInfo`). También resuelve el nombre de columna a partir de `#[column(name = "...")]`.
 fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result<ParsedFields> {
     let mut has_id = false;
-    let mut fields = Vec::new();
+    let mut fields: Vec<FieldInfo> = Vec::new();
     let mut relationships = Vec::new();
     let mut transients = Vec::new();
 
     for f in named_fields.iter() {
+        if f.attrs.iter().any(|attr| attr.path().is_ident("transient"))
+        && f.attrs.iter().any(|attr| attr.path().is_ident("relationship")) {
+            return Err(syn::Error::new_spanned(f.attrs.iter().find(|a| a.path().is_ident("relationship")).unwrap(), "Incompatible attributes transient and relationship"));
+        }
+
         if f.attrs.iter().any(|attr| attr.path().is_ident("transient")) {
             transients.push(f.ident.clone().unwrap());
             continue;
@@ -190,68 +188,78 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
                     return Err(syn::Error::new_spanned(attr, "Attribute name cannot be empty"));
                 }
             } else if attr.path().is_ident("relationship") {
-                // Las relaciones no se persisten como columna propia: se marcan como transient
-                // para que map_from_row las rellene con Default y no se incluyan en get_values.
                 add = false;
-             transients.push(f.ident.clone().unwrap());
+                transients.push(f.ident.clone().unwrap());
 
-                if let Type::Path(type_path) = &f.ty {
-                    // tomamos el ÚLTIMO segmento: soporta Option<T>, std::option::Option<T>, etc.
-                    if let Some(segment) = type_path.path.segments.last() {
-                        let ident_str = segment.ident.to_string();
+                let Type::Path(type_path) = &f.ty else {
+                    return Err(syn::Error::new_spanned(f, "Expected Option or Vec"));
+                };
 
-                        // Solo nos interesa el tipo genérico interno T de Option<T>/Vec<T>.
-                        if let PathArguments::AngleBracketed(args) = &segment.arguments
-                            && let Some(GenericArgument::Type(inner_ty)) = args.args.first()
-                        {
-                            // Option<T> => relación a lo sumo 1 (by_id); Vec<T> => relación a muchos.
-                            let by_id = match ident_str.as_str() {
-                                "Option" => true,
-                                "Vec" => false,
-                                _ => {
-                                    return Err(syn::Error::new_spanned(
-                                        f,
-                                        "Relationship only can be holded in Vec or Option",
-                                    ));
-                                }
-                            };
+                let Some(segment) = type_path.path.segments.last() else {
+                    return Err(syn::Error::new_spanned(f, "Cannot determine relationship type"));
+                };
 
-                            // Sintaxis: #[relationship((local_field, remote::Column), (local_field2, remote::Column2), ...)]
-                            // Cada par entre paréntesis define una condición de join local = remoto.
-                            let joins: Vec<(Ident, Path)> = attr.parse_args_with(|input: ParseStream| {
-                                    let pairs = Punctuated::<(Ident, Path), Token![,]>::parse_terminated_with(
-                                        input,
-                                        |input: ParseStream| {
-                                            let content;
-                                            syn::parenthesized!(content in input);
+                let PathArguments::AngleBracketed(args) = &segment.arguments else {
+                    return Err(syn::Error::new_spanned(f, "Expected Option or Vec"));
+                };
 
-                                            let local_field: Ident = content.parse()?;
-                                            content.parse::<Token![,]>()?;
-                                            let remote_column: Path = content.parse()?;
+                let Some(generic_arg) = args.args.first() else {
+                    return Err(syn::Error::new_spanned(f, "Cannot extract generic type"));
+                };
 
-                                            Ok((local_field, remote_column))
-                                        },
-                                    )?;
-                                    Ok(pairs.into_iter().collect())
-                                })?;
+                let GenericArgument::Type(inner_ty) = generic_arg else {
+                    return Err(syn::Error::new_spanned(f, "Expected type in generic argument"));
+                };
 
-                            relationships.push({
-                                RelationshipDefinition {
-                                    field: f.ident.clone().unwrap().clone(),
-                                    by_id,
-                                    ty: inner_ty.clone(),
-                                    joins,
-                                }
-                            });
-                        }
+                let by_id = match segment.ident.to_string().as_str() {
+                    "Option" => true,
+                    "Vec" => false,
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            f,
+                            "Relationship only can be holded in Vec or Option",
+                        ));
                     }
+                };
+
+                let joins: Vec<(Ident, Path)> = attr.parse_args_with(|input: ParseStream| {
+                    let pairs: Punctuated<(Ident, Path), syn::token::Comma> =
+                        Punctuated::<(Ident, Path), Token![,]>::parse_terminated_with(
+                            input,
+                            |input: ParseStream| {
+                                let content;
+                                syn::parenthesized!(content in input);
+
+                                let local_field: Ident = content.parse()?;
+                                content.parse::<Token![,]>()?;
+                                let remote_column: Path = content.parse()?;
+
+                                Ok((local_field, remote_column))
+                            },
+                        )?;
+                    Ok(pairs.into_iter().collect())
+                })?;
+
+                if joins.is_empty() {
+                    return Err(syn::Error::new_spanned(attr, "Columns for join cannot be empty"));
                 }
+
+                relationships.push(RelationshipDefinition {
+                    field: f.ident.clone().unwrap(),
+                    by_id,
+                    ty: inner_ty.clone(),
+                    joins,
+                });
 
                 continue;
             }
         }
 
         if add {
+            if fields.iter().any(|f|f.column==column_name){
+                return Err(syn::Error::new_spanned(f, "Duplicated column name"));
+            }
+
             fields.push(FieldInfo {
                 ident,
                 column: column_name,
@@ -270,8 +278,6 @@ fn parse_fields(named_fields: &Punctuated<syn::Field, Token![,]>) -> syn::Result
     })
 }
 
-/// `comparable`/`hashable` dependen de comparar por clave primaria, así que exigen que la
-/// entidad tenga al menos un campo `#[primary_key]`.
 fn validate_id_requirements(
     input: &DeriveInput,
     has_id: bool,
@@ -295,16 +301,11 @@ fn validate_id_requirements(
     Ok(())
 }
 
-/// Parsea los atributos `#[indexes((col1, col2), (col3 = "literal"), ...)]` y
-/// `#[uniques(...)]` de la struct. Dentro de cada grupo entre paréntesis, un identificador
-/// suelto es una columna variable del índice (recibida como parámetro en las funciones
-/// generadas) y un `ident = literal` es una condición fija (el índice queda restringido a
-/// ese valor constante). Puede haber varios grupos de índices, cada uno entre paréntesis.
 fn parse_indexes<'a>(
     input: &DeriveInput,
     fields: &'a [FieldInfo],
 ) -> syn::Result<Vec<IndexDefinition<'a>>> {
-    let mut indexes = Vec::new();
+    let mut indexes: Vec<IndexDefinition<'_>> = Vec::new();
 
     for attr in &input.attrs {
         if !attr.path().is_ident("index") && !attr.path().is_ident("unique") {
@@ -321,9 +322,13 @@ fn parse_indexes<'a>(
                 Ok(name_lit) => {
                     let name = name_lit.value();
 
+                    if indexes.iter().any(|i|i.name==name){
+                        return Err(syn::Error::new_spanned(attr, "Duplicated index name"));
+                    }
+
                     input.parse::<Token![,]>()?;
 
-                    let mut columns = Vec::new();
+                    let mut columns: Vec<&FieldInfo> = Vec::new();
 
                     let content ; 
                     parenthesized!(content in input);
@@ -332,6 +337,10 @@ fn parse_indexes<'a>(
                         let field = fields.iter().find(|f| f.ident == ident).ok_or_else(|| {
                             syn::Error::new_spanned(&ident, format!("missing field {}", ident))
                         })?;
+                        if columns.iter().any(|c|c.ident==field.ident) {
+                            return Err(syn::Error::new_spanned(ident, "Duplicated column in index"));
+                        }
+                        
                         columns.push(field);
 
                         if !content.is_empty() {
@@ -389,11 +398,6 @@ fn parse_indexes<'a>(
     Ok(indexes)
 }
 
-/// Genera la expresión `Where` que identifica una fila por su clave primaria: una única
-/// igualdad si hay un solo campo id, o un `Where::And` de igualdades si la clave es compuesta.
-/// `value_for` decide cómo obtener el valor de cada campo (p. ej. `self.campo` o el parámetro
-/// de función homónimo), lo que permite reutilizar esta función tanto en el `impl` de la
-/// entidad como en el del repositorio.
 fn build_condition(
     id_fields: &[&FieldInfo],
     value_for: impl Fn(&FieldInfo) -> TokenStream2,
@@ -423,14 +427,11 @@ fn build_condition(
     }
 }
 
-/// Análogo a `build_condition` pero para un `IndexDefinition`: combina las columnas variables
-/// (usando `value_for`) y las condiciones fijas (literal embebido en el propio atributo) en un
-/// único `Where`, uniéndolas con `And` cuando hay más de una.
 fn build_index_condition(
     index: &IndexDefinition,
     value_for: impl Fn(&FieldInfo) -> TokenStream2,
 ) -> TokenStream2 {
-    if index.columns.len() + index.conditions.clone().unwrap_or_default().len() > 1 {
+    if index.columns.len() + index.conditions.as_ref().map_or(0,|v|v.len()) > 1 {
         let mut cond = Vec::new();
         index.columns.iter().map(|f| {
             let const_ident = &f.const_ident;
@@ -476,26 +477,35 @@ fn build_index_condition(
     }
 }
 
-/// Construye el parámetro de función `nombre: Tipo` para un campo, sustituyendo `String` por
-/// `&str` para que las funciones generadas (select_by_id, select_by_<índice>, etc.) acepten
-/// referencias en vez de forzar al llamador a pasar un `String` propio.
 fn param_type(f: &FieldInfo) -> TokenStream2 {
     let ident = &f.ident;
     let mut ty = &f.ty;
     let str_ty: Type = parse_quote!(&str);
+    let bytes_ty: Type = parse_quote!(&[u8]);
 
     if let Type::Path(type_path) = ty
-        && let Some(segment) = type_path.path.segments.last()
-        && segment.ident == "String"
-    {
-        ty = &str_ty;
+        && let Some(segment) = type_path.path.segments.last(){
+        ty = match segment.ident.to_string().as_ref() {
+            "String" => &str_ty,
+            "Vec" => {
+                match &segment.arguments {
+                    PathArguments::AngleBracketed(args) => {
+                        match args.args.first() {
+                            Some(GenericArgument::Type(Type::Path(inner))) if inner.path.is_ident("u8") => {
+                                &bytes_ty
+                            }
+                            _=> ty
+                        }
+                    }
+                    _ => ty
+                }
+            },
+            _ => ty
+        }
     }
     quote! { #ident: #ty }
 }
 
-/// Genera el módulo `entity` anidado en el struct, con la constante `TABLE` y el submódulo
-/// `columns` con una constante tipada por columna (usadas en el resto de funciones generadas
-/// para referenciar tabla/columnas de forma type-safe en vez de por string).
 fn build_entity_module(
     struct_name: &syn::Ident,
     schema_name: &str,
@@ -539,9 +549,6 @@ fn build_entity_module(
     }
 }
 
-/// Genera el `impl Entity` requerido por el ORM: la lista de columnas, el mapeo de una fila de
-/// resultado a la struct (`map_from_row`) y la extracción de valores para persistir
-/// (`get_values`).
 fn build_entity_trait_impl(
     struct_name: &syn::Ident,
     fields: &[FieldInfo],
@@ -552,16 +559,12 @@ fn build_entity_trait_impl(
         quote! { self::entity::columns::#ident }
     });
 
-    // Cada campo se lee por posición (idx), asumiendo que el SELECT devuelve las columnas
-    // en el mismo orden que FIELDS.
     let map_from_rows_lines = fields.iter().enumerate().map(|(idx, f)| {
         let ident = &f.ident;
         let ty = &f.ty;
         quote! { #ident: row.get::<_, #ty>(#idx)? }
     });
 
-    // Si hay campos transient/relationship, no vienen en la fila: se completan con su valor
-    // por defecto vía `..Default::default()`.
     let default_spread = transients.iter().map(|i| 
         quote!{
             , #i: Default::default()
@@ -607,9 +610,6 @@ fn build_entity_trait_impl(
     }
 }
 
-/// Genera, para cada `#[relationship(...)]`, un par de métodos `fetch_<campo>_relationship[_in_tx]`
-/// que cargan la entidad/lista relacionada en el propio campo, construyendo el `Where` de join
-/// a partir de los pares (campo local, columna remota) declarados en el atributo.
 fn build_entity_with_relationships_trait_impl(
     relationships: Vec<RelationshipDefinition>,
 ) -> TokenStream2 {
@@ -684,9 +684,6 @@ fn build_entity_with_relationships_trait_impl(
     }
 }
 
-/// Genera, en el `impl` de la entidad, los métodos de instancia `update_by_id`/`delete_by_id`
-/// (y sus variantes `_in_tx`) que actualizan/eliminan la fila identificada por sus campos
-/// `#[primary_key]`. No se genera nada si la entidad no tiene clave primaria.
 fn build_primary_key_impl(
     struct_name: &syn::Ident,
     fields: &[FieldInfo],
@@ -753,9 +750,6 @@ fn build_primary_key_impl(
     }
 }
 
-/// Genera, en el `impl` del repositorio, las funciones asociadas `exists`/`select_by_id`
-/// (y sus variantes `_in_tx`) que reciben los campos de la clave primaria como parámetros.
-/// No se genera nada si la entidad no tiene clave primaria.
 fn repository_build_primary_key_impl(
     struct_name: &syn::Ident,
     id_fields: &[&FieldInfo],
@@ -815,11 +809,6 @@ fn repository_build_primary_key_impl(
     }
 }
 
-/// Genera, en el `impl` del repositorio, cuatro funciones asociadas por cada índice declarado:
-/// `select_by_<cols>[_in_tx]` y `count_by_<cols>[_in_tx]`. El nombre de la función se deriva de
-/// las columnas variables del índice y, si hay condiciones fijas, de un sufijo `_where_<cond>`.
-/// Los índices `unique` devuelven `Option<T>` y no aceptan `order_by`; los no únicos devuelven
-/// `Vec<T>` y sí lo aceptan.
 fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> TokenStream2 {
     if indexes.is_empty() {
         return quote! {};
@@ -859,8 +848,6 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
         let doc3=format!("{} by {} index", if index.unique {"Exists"} else {"Count rows"}, index.name);
         let doc4=format!("{} in transaction", doc3);
 
-        // Un índice único devuelve como mucho una fila, así que ordenar no tiene sentido:
-        // solo los índices no únicos exponen el parámetro `order_by`.
         let order_by_arg = if index.unique {
             quote! {}
         } else {
@@ -958,8 +945,6 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
     }
 }
 
-/// Cuando `#[entity(comparable = true)]`, genera `PartialEq`/`Eq` comparando únicamente los
-/// campos `#[primary_key]` (dos instancias son iguales si representan la misma fila).
 fn build_comparable_impl(
     struct_name: &syn::Ident,
     comparable: bool,
@@ -987,8 +972,6 @@ fn build_comparable_impl(
     }
 }
 
-/// Cuando `#[entity(hashable = true)]`, genera `std::hash::Hash` hasheando únicamente los
-/// campos `#[primary_key]`, coherente con el `Eq` generado por `build_comparable_impl`.
 fn build_hashable_impl(
     struct_name: &syn::Ident,
     hashable: bool,
@@ -1017,61 +1000,38 @@ fn build_hashable_impl(
 
 
 
-/// Metadatos de un campo "persistente" de la entidad (no transient, no relationship).
 struct FieldInfo {
-    /// Nombre del campo en la struct de Rust.
     ident: syn::Ident,
-    /// Nombre de la columna en la base de datos (por defecto el nombre en minúsculas).
     column: String,
-    /// Tipo Rust del campo.
     ty: syn::Type,
-    /// Identificador de la constante generada para la columna (nombre del campo en mayúsculas).
     const_ident: syn::Ident,
-    /// Indica si el campo está marcado con `#[primary_key]`.
     is_id: bool,
 }
 
-/// Valores extraídos del atributo `#[entity(...)]` a nivel de struct.
 struct EntityAttrs {
-    /// Nombre del schema
     schema_name: String,
-    /// Nombre de la tabla; si no se especifica se usa el nombre de la struct en minúsculas.
     table_name: String,
-    /// Si es `true`, se genera `impl PartialEq`/`Eq` basado en los campos id.
     comparable: bool,
-    /// Si es `true`, se genera `impl Hash` basado en los campos id.
     hashable: bool,
 }
 
-/// Resultado de analizar todos los campos de la struct anotada.
 struct ParsedFields {
     fields: Vec<FieldInfo>,
     transients: Vec<Ident>,
     relationships: Vec<RelationshipDefinition>,
-    /// `true` si existe al menos un campo `#[primary_key]`.
     has_id: bool,
 }
 
-/// Definición de una relación declarada con `#[relationship(...)]` (campo `Option<T>` o `Vec<T>`).
 struct RelationshipDefinition {
-    /// Campo de la struct que almacena la relación.
     field: syn::Ident,
-    /// `true` si el campo es `Option<T>` (relación a lo sumo 1) o `false` si es `Vec<T>` (a muchos).
     by_id: bool,
-    /// Tipo `T` de la entidad relacionada.
     ty: syn::Type,
-    /// Pares (campo local, columna remota) usados para construir la condición de join.
     joins: Vec<(Ident, Path)>,
 }
 
-/// Definición de un índice declarado con `#[indexes(...)]` o `#[uniques(...)]`.
 struct IndexDefinition<'a> {
-    /// Nombre del indice
     pub name: String,
-    /// Columnas que forman parte del índice y que se reciben como parámetro en las funciones generadas.
     pub columns: Vec<&'a FieldInfo>,
-    /// Columnas fijadas a un valor literal constante (p. ej. `#[indexes((status = "active"))]`).
     pub conditions: Option<Vec<(&'a FieldInfo, syn::Lit)>>,
-    /// Si es `true` el índice es único y las funciones generadas devuelven `Option` en vez de `Vec`.
     pub unique: bool,
 }

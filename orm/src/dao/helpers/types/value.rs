@@ -1,3 +1,5 @@
+use rusqlite::types::ValueRef;
+
 use crate::rusqlite::{
     ToSql,
     types::{Null, ToSqlOutput},
@@ -19,6 +21,7 @@ pub enum Value {
     Float64(f64),
     Bool(bool),
     Text(String),
+    Blob(Vec<u8>),
     Null,
 }
 
@@ -39,6 +42,15 @@ impl Value {
             Value::Float64(v) => v.to_string(),
             Value::Bool(v) => v.to_string(),
             Value::Text(v) => v.clone(),
+            Value::Blob(v) => {
+                let mut s = String::with_capacity(v.len() * 2 + 3);
+                s.push_str("X'");
+                for byte in v {
+                    s.push_str(&format!("{byte:02X}"));
+                }
+                s.push('\'');
+                s
+            }
             Value::Null => "NULL".to_string(),
         }
     }
@@ -63,6 +75,7 @@ impl ToSql for Value {
             Value::Float64(v) => ToSqlOutput::from(*v),
             Value::Bool(v) => ToSqlOutput::from(*v),
             Value::Text(v) => ToSqlOutput::from(v.clone()),
+            Value::Blob(v) => ToSqlOutput::Borrowed(ValueRef::Blob(v)),
             Value::Null => ToSqlOutput::from(Null),
         })
     }
@@ -143,6 +156,18 @@ impl From<&str> for Value {
         Value::Text(v.to_string())
     }
 }
+impl From<Vec<u8>> for Value {
+    fn from(v: Vec<u8>) -> Self {
+        Value::Blob(v)
+    }
+}
+
+impl From<&[u8]> for Value {
+    fn from(v: &[u8]) -> Self {
+        Value::Blob(v.to_vec())
+    }
+}
+
 impl<T> From<Option<T>> for Value
 where
     T: Into<Value>,

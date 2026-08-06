@@ -25,7 +25,7 @@ This repository is a Cargo workspace made up of two crates:
 - **Generated unique-index lookups** — `#[unique("name", (col_d, col_e))]` uses the same syntax as `#[index(...)]`, but the generated `select_by_name` returns `Option<Self>` (at most one row) instead of `Vec<Self>`, has no `order_by` parameter, and its count counterpart is `exists_by_name` returning `bool`.
 - **Relationships between entities** — annotate an `Option<T>` or `Vec<T>` field with `#[relationship((local_field, remote_column), ...)]` to get `fetch_<field>_relationship` / `fetch_<field>_relationship_in_tx` instance methods that lazily load the related row(s).
 - **Optional derived `PartialEq` / `Eq` / `Hash`** based on the entity's id column(s), via `comparable` / `hashable` attribute flags.
-- **Fields excluded from the schema** with `#[dont_map]`, populated via `Default::default()` when mapping rows back (requires the struct to implement `Default`). Relationship fields are excluded automatically the same way.
+- **Fields excluded from the schema** with `#[transient]`, populated via `Default::default()` when mapping rows back (requires the struct to implement `Default`). Relationship fields are excluded automatically the same way.
 - **Transaction support** — every query builder exposes both a "managed" method (`fetch`, `execute`, ...) that opens its own transaction against a global connection, and an `_in_tx` counterpart for composing multiple statements atomically.
 - **SQL-file schema migrations** — the `dlls!("path")` macro embeds every `<version>_<description>.sql` file found in a directory (relative to the crate manifest) into a static array of `DdlVersion`s, applied in order and tracked via SQLite's `PRAGMA user_version`.
 - **Query logging** — every generated statement is logged (via the `log` crate) with parameters interpolated, plus the number of affected/fetched rows.
@@ -59,7 +59,7 @@ pub struct User {
     #[column(name = "email_address")]
     pub email: String,
     pub name: String,
-    #[dont_map]
+    #[transient]
     pub transient_flag: bool,
 }
 ```
@@ -76,7 +76,7 @@ This expands into:
 
 `#[unique(...)]` works exactly like `#[index(...)]` but marks the index as unique. For example, replacing the attribute above with `#[unique("email", (email))]` generates `UserRepository::select_by_email(email)` returning `Option<User>` (no `order_by` parameter, since a unique index matches at most one row) and `UserRepository::exists_by_email(email)`, plus their `_in_tx` variants. An index can also mix variable columns with fixed conditions, e.g. `#[unique("active_tenant_username", (tenant_id, username), (status = "active"))]`. Note that the attribute only generates the lookup helpers — it does **not** create a `UNIQUE` constraint in the database; that still needs to be declared in your DDL. See [`macros/README.md`](../macros/README.md#indexes-and-unique-indexes) for the full syntax.
 
-`#[dont_map]` fields are skipped when building `INSERT`/`SELECT` column lists and are restored to their `Default` value when a row is mapped back into the struct.
+`#[transient]` fields are skipped when building `INSERT`/`SELECT` column lists and are restored to their `Default` value when a row is mapped back into the struct.
 
 ### 2. Define your schema as versioned SQL files
 
@@ -185,7 +185,7 @@ pub struct Post {
 }
 ```
 
-Each `(local_field, remote_column)` pair builds an `Eq` condition between a field on the current struct and a typed column constant on the related entity; several pairs are combined with `AND`, which lets you model composite-key joins. Relationship fields behave like `#[dont_map]` fields under the hood: they're skipped by `INSERT`/`SELECT` and start out as `Default::default()`.
+Each `(local_field, remote_column)` pair builds an `Eq` condition between a field on the current struct and a typed column constant on the related entity; several pairs are combined with `AND`, which lets you model composite-key joins. Relationship fields behave like `#[transient]` fields under the hood: they're skipped by `INSERT`/`SELECT` and start out as `Default::default()`.
 
 The macro adds instance methods on the struct itself (not the repository) to lazily populate the field:
 
