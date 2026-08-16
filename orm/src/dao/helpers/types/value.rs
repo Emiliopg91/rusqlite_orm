@@ -1,8 +1,6 @@
-use rusqlite::types::ValueRef;
-
 use crate::rusqlite::{
     ToSql,
-    types::{Null, ToSqlOutput},
+    types::{Null, ToSqlOutput, ValueRef},
 };
 
 #[derive(Clone)]

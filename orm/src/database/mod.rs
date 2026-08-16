@@ -1,12 +1,12 @@
 pub mod errors;
 
-use std::{
-    path::Path,
-    sync::{LazyLock, Mutex},
-};
+use std::{path::Path, sync::OnceLock, time::Duration};
 
-use crate::rusqlite::{Connection, Transaction};
 use log::debug;
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
+
+use crate::rusqlite::Transaction;
 
 use self::errors::{DatabaseError, Result};
 
@@ -18,58 +18,50 @@ pub struct DdlVersion {
 }
 
 pub struct Database {
-    connection: Option<Connection>,
-}
-
-impl Default for Database {
-    fn default() -> Self {
-        Self::new()
-    }
+    pool: Pool<SqliteConnectionManager>,
 }
 
 impl Database {
-    pub fn new() -> Self {
-        Self { connection: None }
-    }
-
-    pub fn open<P>(&mut self, path: P) -> Result<()>
+    pub fn open<P>(path: P) -> Result<Self>
     where
         P: AsRef<Path>,
     {
-        let file_connection = Connection::open(&path)
+        let manager = SqliteConnectionManager::file(path.as_ref()).with_init(|conn| {
+            conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+            conn.busy_timeout(Duration::from_secs(5))
+        });
+
+        let pool = Pool::builder()
+            .max_size(8)
+            .connection_timeout(Duration::from_secs(5))
+            .build(manager)
             .map_err(|e| DatabaseError::Connection(path.as_ref().display().to_string(), e))?;
 
-        file_connection
-            .execute("PRAGMA foreign_keys = ON", [])
-            .map_err(DatabaseError::ForeignKeysPragma)?;
-
-        self.connection = Some(file_connection);
-
-        Ok(())
+        Ok(Self { pool })
     }
 
-    pub fn run_in_tx<F, R>(&mut self, mut f: F) -> Result<R>
+    pub fn run<F, R>(&self, mut f: F) -> Result<R>
     where
-        F: FnMut(&mut Transaction) -> std::result::Result<R, Box<dyn std::error::Error>>,
+        F: FnMut(
+            &mut Transaction,
+        ) -> std::result::Result<R, Box<dyn std::error::Error + Send + Sync>>,
     {
-        if let Some(connection) = self.connection.as_mut() {
-            let mut tx = connection
-                .transaction()
-                .map_err(|e| DatabaseError::Transaction(Box::new(e)))?;
+        let mut conn = self.pool.get().map_err(DatabaseError::Pool)?;
 
-            let res = f(&mut tx).map_err(DatabaseError::Transaction)?;
+        let mut tx = conn
+            .transaction()
+            .map_err(|e| DatabaseError::Transaction(Box::new(e)))?;
 
-            tx.commit()
-                .map_err(|e| DatabaseError::Transaction(Box::new(e)))?;
+        let res = f(&mut tx).map_err(DatabaseError::Transaction)?;
 
-            Ok(res)
-        } else {
-            Err(DatabaseError::ClosedConnection())
-        }
+        tx.commit()
+            .map_err(|e| DatabaseError::Transaction(Box::new(e)))?;
+
+        Ok(res)
     }
 
-    pub fn create_schema(&mut self, ddls: &[DdlVersion]) -> Result<()> {
-        let updated = self.run_in_tx(|tx| {
+    pub fn create_schema(&self, ddls: &[DdlVersion]) -> Result<()> {
+        let updated = self.run(|tx| {
             let current_vers: u16 = tx
                 .pragma_query_value(None, "user_version", |r| r.get(0))
                 .map_err(DatabaseError::SchemaCreation)?;
@@ -101,18 +93,14 @@ impl Database {
         if updated {
             debug!("Schema updated, running VACUUM to reclaim space...");
 
-            if let Some(connection) = self.connection.as_mut() {
-                connection
-                    .execute("VACUUM", [])
-                    .map_err(DatabaseError::SchemaCreation)
-                    .map(|_| ())
-            } else {
-                Err(DatabaseError::ClosedConnection())
-            }
+            let conn = self.pool.get().map_err(DatabaseError::Pool)?;
+            conn.execute("VACUUM", [])
+                .map_err(DatabaseError::SchemaCreation)
+                .map(|_| ())
         } else {
             Ok(())
         }
     }
 }
 
-pub static DATABASE_INST: LazyLock<Mutex<Database>> = LazyLock::new(|| Mutex::new(Database::new()));
+pub static DATABASE_INST: OnceLock<Database> = OnceLock::new();

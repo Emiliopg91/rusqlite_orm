@@ -9,9 +9,13 @@ license = "MIT"
 categories = ["database"]
 
 [dependencies]
-rusqlite = { version = "^0", feature = ["bundled"] }
+r2d2 = "^0.8"
+r2d2_sqlite = { version = "^0.35", features = ["bundled"] }
 thiserror = "^2"
 log = "^0"
+
+[dev-dependencies]
+tempfile = "^3"
 
 [lib]
 crate-type = ["staticlib", "cdylib", "rlib"]

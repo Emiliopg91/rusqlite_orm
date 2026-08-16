@@ -694,8 +694,10 @@ fn build_entity_with_relationships_trait_impl(
             quote! {
                 #[doc = #doc]
                 pub fn #fn_name(&mut self) -> rusqlite_orm::database::errors::Result<()>{
-                    let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                    db.run_in_tx(|tx| Ok(self.#fn_name_tx(tx)?))
+                    rusqlite_orm::database::DATABASE_INST
+                        .get()
+                        .expect("Database not initialized")
+                        .run(|tx| Ok(self.#fn_name_tx(tx)?))
                 }
 
                 #[doc = #doc_tx]
@@ -748,8 +750,10 @@ fn build_primary_key_impl(
     quote! {
             #[doc = "Update row by primary key"]
             pub fn update_by_id(&self) -> rusqlite_orm::database::errors::Result<()> {
-                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Ok(self.update_by_id_in_tx(tx)?))
+                rusqlite_orm::database::DATABASE_INST
+                    .get()
+                    .expect("Database not initialized")
+                    .run(|tx| Ok(self.update_by_id_in_tx(tx)?))
             }
 
             #[doc = "Update row by primary key in transaction"]
@@ -766,8 +770,10 @@ fn build_primary_key_impl(
 
             #[doc = "Delete row by primary key"]
             pub fn delete_by_id(&self) -> rusqlite_orm::database::errors::Result<()> {
-                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Ok(self.delete_by_id_in_tx(tx)?))
+                rusqlite_orm::database::DATABASE_INST
+                    .get()
+                    .expect("Database not initialized")
+                    .run(|tx| Ok(self.delete_by_id_in_tx(tx)?))
             }
 
             #[doc = "Delete row by primary key in transaction"]
@@ -806,8 +812,10 @@ fn repository_build_primary_key_impl(
             pub fn exists(
                 #(#by_id_params),*
             ) -> rusqlite_orm::database::errors::Result<bool> {
-                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Ok(Self::exists_in_tx(tx, #id_condition_names)?))
+                rusqlite_orm::database::DATABASE_INST
+                    .get()
+                    .expect("Database not initialized")
+                    .run(|tx| Ok(Self::exists_in_tx(tx, #id_condition_names)?))
             }
             #[doc = "Checks if row exists in transaction"]
             pub fn exists_in_tx(
@@ -824,8 +832,10 @@ fn repository_build_primary_key_impl(
             pub fn select_by_id(
                 #(#by_id_params),*
             ) -> rusqlite_orm::database::errors::Result<Option<#struct_name>> {
-                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Ok(Self::select_by_id_in_tx(tx, #id_condition_names)?))
+                rusqlite_orm::database::DATABASE_INST
+                    .get()
+                    .expect("Database not initialized")
+                    .run(|tx| Ok(Self::select_by_id_in_tx(tx, #id_condition_names)?))
             }
 
             #[doc = "Fetch row by primary key in transaction"]
@@ -948,8 +958,10 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
         quote! {
             #[doc = #doc1]
             pub fn #fn_name(#(#select_params),* #order_by_arg) -> rusqlite_orm::database::errors::Result<#ret_type> {
-                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Ok(Self::#fn_name_tx(tx, #(#idx_col_names_idents),* #order_by_param)?))
+                rusqlite_orm::database::DATABASE_INST
+                    .get()
+                    .expect("Database not initialized")
+                    .run(|tx| Ok(Self::#fn_name_tx(tx, #(#idx_col_names_idents),* #order_by_param)?))
             }
 
             #[doc = #doc2]
@@ -962,8 +974,10 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
 
             #[doc = #doc3]
             pub fn #fn_name_count(#(#select_params),*) -> rusqlite_orm::database::errors::Result<#cnt_ret_type> {
-                let mut db = rusqlite_orm::database::DATABASE_INST.lock().unwrap();
-                db.run_in_tx(|tx| Ok(Self::#fn_name_count_tx(tx, #(#idx_col_names_idents),*)?))
+                rusqlite_orm::database::DATABASE_INST
+                    .get()
+                    .expect("Database not initialized")
+                    .run(|tx| Ok(Self::#fn_name_count_tx(tx, #(#idx_col_names_idents),*)?))
             }
 
             #[doc = #doc4]

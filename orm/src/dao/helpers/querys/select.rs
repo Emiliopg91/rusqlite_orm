@@ -121,8 +121,10 @@ where
     }
 
     pub fn fetch(&self) -> crate::database::errors::Result<Vec<T>> {
-        let mut db = DATABASE_INST.lock().unwrap();
-        db.run_in_tx(|tx| Ok(self.fetch_in_tx(tx)?))
+        DATABASE_INST
+            .get()
+            .expect("Database not initialized")
+            .run(|tx| Ok(self.fetch_in_tx(tx)?))
     }
 
     pub fn fetch_one_in_tx(
@@ -133,8 +135,10 @@ where
     }
 
     pub fn fetch_one(&self) -> crate::database::errors::Result<Option<T>> {
-        let mut db = DATABASE_INST.lock().unwrap();
-        let res = db.run_in_tx(|tx| Ok(self.fetch_in_tx(tx)?))?;
+        let res = DATABASE_INST
+            .get()
+            .expect("Database not initialized")
+            .run(|tx| Ok(self.fetch_in_tx(tx)?))?;
         Ok(res.into_iter().next())
     }
 
@@ -160,7 +164,9 @@ where
     }
 
     pub fn count(&self) -> crate::database::errors::Result<i64> {
-        let mut db = DATABASE_INST.lock().unwrap();
-        db.run_in_tx(|tx| Ok(self.count_in_tx(tx)?))
+        DATABASE_INST
+            .get()
+            .expect("Database not initialized")
+            .run(|tx| Ok(self.count_in_tx(tx)?))
     }
 }

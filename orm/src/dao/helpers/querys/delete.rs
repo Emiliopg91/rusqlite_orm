@@ -63,7 +63,9 @@ where
     }
 
     pub fn execute(&self) -> crate::database::errors::Result<usize> {
-        let mut db = DATABASE_INST.lock().unwrap();
-        db.run_in_tx(|tx| Ok(self.execute_in_tx(tx)?))
+        DATABASE_INST
+            .get()
+            .expect("Database not initialized")
+            .run(|tx| Ok(self.execute_in_tx(tx)?))
     }
 }
