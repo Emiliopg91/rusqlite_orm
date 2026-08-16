@@ -3,12 +3,14 @@ pub mod errors;
 use std::{path::Path, sync::OnceLock, time::Duration};
 
 use log::debug;
-use r2d2::Pool;
+use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 
 use crate::rusqlite::Transaction;
 
 use self::errors::{DatabaseError, Result};
+
+type TxResult<R> = std::result::Result<R, Box<dyn std::error::Error + Send + Sync>>;
 
 #[derive(Clone, Copy)]
 pub struct DdlVersion {
@@ -21,13 +23,12 @@ pub struct Database {
     pool: Pool<SqliteConnectionManager>,
 }
 
+static DATABASE_INST: OnceLock<Database> = OnceLock::new();
+
 impl Database {
-    pub fn open<P>(path: P) -> Result<Self>
-    where
-        P: AsRef<Path>,
-    {
+    pub fn initialize<P: AsRef<Path>>(path: P) -> Result<()> {
         let manager = SqliteConnectionManager::file(path.as_ref()).with_init(|conn| {
-            conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
+            conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = DELETE;")?;
             conn.busy_timeout(Duration::from_secs(5))
         });
 
@@ -37,16 +38,16 @@ impl Database {
             .build(manager)
             .map_err(|e| DatabaseError::Connection(path.as_ref().display().to_string(), e))?;
 
-        Ok(Self { pool })
+        DATABASE_INST
+            .set(Self { pool })
+            .map_err(|_| DatabaseError::AlreadyInitialized())
     }
 
-    pub fn run<F, R>(&self, mut f: F) -> Result<R>
+    pub fn run_in_transaction<F, R>(f: F) -> Result<R>
     where
-        F: FnMut(
-            &mut Transaction,
-        ) -> std::result::Result<R, Box<dyn std::error::Error + Send + Sync>>,
+        F: FnOnce(&mut Transaction) -> TxResult<R>,
     {
-        let mut conn = self.pool.get().map_err(DatabaseError::Pool)?;
+        let mut conn = Self::instance()?.connection()?;
 
         let mut tx = conn
             .transaction()
@@ -60,17 +61,28 @@ impl Database {
         Ok(res)
     }
 
-    pub fn create_schema(&self, ddls: &[DdlVersion]) -> Result<()> {
-        let updated = self.run(|tx| {
-            let current_vers: u16 = tx
+    pub fn run<F, R>(f: F) -> Result<R>
+    where
+        F: FnOnce(&mut PooledConnection<SqliteConnectionManager>) -> TxResult<R>,
+    {
+        let mut conn = Self::instance()?.connection()?;
+
+        let res = f(&mut conn).map_err(DatabaseError::RunningOnConnection)?;
+
+        Ok(res)
+    }
+
+    pub fn create_schema(ddls: &[DdlVersion]) -> Result<()> {
+        let updated = Self::run_in_transaction(|tx| {
+            let current_version: u16 = tx
                 .pragma_query_value(None, "user_version", |r| r.get(0))
                 .map_err(DatabaseError::SchemaCreation)?;
 
-            let updates = ddls
+            let updates: Vec<DdlVersion> = ddls
                 .iter()
-                .filter(|update| update.version > current_vers)
-                .cloned()
-                .collect::<Vec<DdlVersion>>();
+                .filter(|update| update.version > current_version)
+                .copied()
+                .collect();
 
             for update in &updates {
                 debug!(
@@ -90,17 +102,24 @@ impl Database {
             Ok(!updates.is_empty())
         })?;
 
-        if updated {
-            debug!("Schema updated, running VACUUM to reclaim space...");
-
-            let conn = self.pool.get().map_err(DatabaseError::Pool)?;
-            conn.execute("VACUUM", [])
-                .map_err(DatabaseError::SchemaCreation)
-                .map(|_| ())
-        } else {
-            Ok(())
+        if !updated {
+            return Ok(());
         }
+
+        debug!("Schema updated, running VACUUM to reclaim space...");
+        Self::instance()?
+            .connection()?
+            .execute("VACUUM", [])
+            .map_err(DatabaseError::SchemaCreation)?;
+
+        Ok(())
+    }
+
+    fn instance() -> Result<&'static Self> {
+        DATABASE_INST.get().ok_or(DatabaseError::ClosedConnection())
+    }
+
+    fn connection(&self) -> Result<PooledConnection<SqliteConnectionManager>> {
+        self.pool.get().map_err(DatabaseError::Pool)
     }
 }
-
-pub static DATABASE_INST: OnceLock<Database> = OnceLock::new();

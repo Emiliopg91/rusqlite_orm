@@ -2,6 +2,10 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum DatabaseError {
+    #[error("Cannot operate on database. Closed connection")]
+    ClosedConnection(),
+    #[error("Database is already initialized")]
+    AlreadyInitialized(),
     #[error("Error while opening connection to {0}: {1}")]
     Connection(String, r2d2::Error),
     #[error("Error obtaining pooled connection: {0}")]
@@ -10,6 +14,8 @@ pub enum DatabaseError {
     SchemaCreation(crate::rusqlite::Error),
     #[error("Error on transaction: {0}")]
     Transaction(Box<dyn std::error::Error + Send + Sync>),
+    #[error("Error running on connection: {0}")]
+    RunningOnConnection(Box<dyn std::error::Error + Send + Sync>),
     #[error("Error on insert: {0}")]
     Insert(crate::rusqlite::Error),
     #[error("Error on update: {0}")]

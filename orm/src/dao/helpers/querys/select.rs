@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use crate::database::Database;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
@@ -10,7 +11,7 @@ use crate::{
             types::{order_by::OrderBy, where_clause::Where},
         },
     },
-    database::{DATABASE_INST, errors::DatabaseError},
+    database::errors::DatabaseError,
 };
 
 pub struct SelectBuilder<T>
@@ -121,10 +122,7 @@ where
     }
 
     pub fn fetch(&self) -> crate::database::errors::Result<Vec<T>> {
-        DATABASE_INST
-            .get()
-            .expect("Database not initialized")
-            .run(|tx| Ok(self.fetch_in_tx(tx)?))
+        Database::run_in_transaction(|tx| Ok(self.fetch_in_tx(tx)?))
     }
 
     pub fn fetch_one_in_tx(
@@ -135,10 +133,7 @@ where
     }
 
     pub fn fetch_one(&self) -> crate::database::errors::Result<Option<T>> {
-        let res = DATABASE_INST
-            .get()
-            .expect("Database not initialized")
-            .run(|tx| Ok(self.fetch_in_tx(tx)?))?;
+        let res = Database::run_in_transaction(|tx| Ok(self.fetch_in_tx(tx)?))?;
         Ok(res.into_iter().next())
     }
 
@@ -164,9 +159,6 @@ where
     }
 
     pub fn count(&self) -> crate::database::errors::Result<i64> {
-        DATABASE_INST
-            .get()
-            .expect("Database not initialized")
-            .run(|tx| Ok(self.count_in_tx(tx)?))
+        Database::run_in_transaction(|tx| Ok(self.count_in_tx(tx)?))
     }
 }

@@ -1,3 +1,4 @@
+use crate::database::Database;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
@@ -8,7 +9,7 @@ use crate::{
             types::{column_name::ColumnName, value::Value, where_clause::Where},
         },
     },
-    database::{DATABASE_INST, errors::DatabaseError},
+    database::errors::DatabaseError,
 };
 
 pub struct UpdateBuilder<T>
@@ -85,9 +86,6 @@ where
     }
 
     pub fn execute(&self) -> crate::database::errors::Result<usize> {
-        DATABASE_INST
-            .get()
-            .expect("Database not initialized")
-            .run(|tx| Ok(self.execute_in_tx(tx)?))
+        Database::run_in_transaction(|tx| Ok(self.execute_in_tx(tx)?))
     }
 }

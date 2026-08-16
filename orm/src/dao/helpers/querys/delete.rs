@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use crate::database::Database;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
@@ -10,7 +11,7 @@ use crate::{
             types::{value::Value, where_clause::Where},
         },
     },
-    database::{DATABASE_INST, errors::DatabaseError},
+    database::errors::DatabaseError,
 };
 
 pub struct DeleteBuilder<T>
@@ -63,9 +64,6 @@ where
     }
 
     pub fn execute(&self) -> crate::database::errors::Result<usize> {
-        DATABASE_INST
-            .get()
-            .expect("Database not initialized")
-            .run(|tx| Ok(self.execute_in_tx(tx)?))
+        Database::run_in_transaction(|tx| Ok(self.execute_in_tx(tx)?))
     }
 }

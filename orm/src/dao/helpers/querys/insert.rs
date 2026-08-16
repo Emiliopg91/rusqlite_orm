@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use crate::database::Database;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
@@ -7,7 +8,7 @@ use crate::{
         Entity,
         helpers::{querys::QueryBuilder, types::value::Value},
     },
-    database::{DATABASE_INST, errors::DatabaseError},
+    database::errors::DatabaseError,
 };
 
 pub struct InsertBuilder<T> {
@@ -83,9 +84,6 @@ where
     }
 
     pub fn execute(&self) -> crate::database::errors::Result<usize> {
-        DATABASE_INST
-            .get()
-            .expect("Database not initialized")
-            .run(|tx| Ok(self.execute_in_tx(tx)?))
+        Database::run_in_transaction(|tx| Ok(self.execute_in_tx(tx)?))
     }
 }
