@@ -64,7 +64,7 @@ where
         self
     }
 
-    pub fn fetch_in_conn(
+    pub fn fetch_in(
         &self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::database::errors::Result<Vec<T>> {
@@ -121,29 +121,29 @@ where
         Ok(res)
     }
 
-    pub fn fetch_one_in_conn(
+    pub fn fetch_one_in(
         &self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::database::errors::Result<Option<T>> {
-        let res = self.fetch_in_conn(conn)?;
+        let res = self.fetch_in(conn)?;
         Ok(res.into_iter().next())
     }
 
     pub fn fetch_one(&self) -> crate::database::errors::Result<Option<T>> {
         Database::run_in_connection(|conn| {
-            let res = self.fetch_one_in_conn(conn)?;
+            let res = self.fetch_one_in(conn)?;
             Ok(res)
         })
     }
 
     pub fn count(&self) -> crate::database::errors::Result<i64> {
         Database::run_in_connection(|conn| {
-            let res = self.count_in_conn(conn)?;
+            let res = self.count_in(conn)?;
             Ok(res)
         })
     }
 
-    pub fn count_in_conn(
+    pub fn count_in(
         &self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::database::errors::Result<i64> {

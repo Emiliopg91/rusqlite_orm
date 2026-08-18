@@ -24,6 +24,8 @@ pub enum DatabaseError {
     Select(crate::rusqlite::Error),
     #[error("Error on delete: {0}")]
     Delete(crate::rusqlite::Error),
+    #[error("Error on savepoint: {0}")]
+    Savepoint(crate::rusqlite::Error),
 }
 
 pub type Result<T> = std::result::Result<T, DatabaseError>;

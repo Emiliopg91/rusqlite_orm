@@ -43,12 +43,12 @@ where
 
     pub fn execute(&self) -> crate::database::errors::Result<usize> {
         Database::run_in_connection(|conn| {
-            let res = self.execute_in_conn(conn)?;
+            let res = self.execute_in(conn)?;
             Ok(res)
         })
     }
 
-    pub fn execute_in_conn(
+    pub fn execute_in(
         &self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::database::errors::Result<usize> {

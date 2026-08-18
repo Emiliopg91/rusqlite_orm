@@ -42,7 +42,7 @@ where
         self
     }
 
-    pub fn execute_in_conn(
+    pub fn execute_in(
         &self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::database::errors::Result<usize> {
