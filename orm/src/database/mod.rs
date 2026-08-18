@@ -43,9 +43,9 @@ impl Database {
             .map_err(|_| DatabaseError::AlreadyInitialized())
     }
 
-    pub fn run_in_transaction<F, R>(f: F) -> Result<R>
+    pub fn run_in_transaction<F, R>(mut f: F) -> Result<R>
     where
-        F: FnOnce(&mut Transaction) -> TxResult<R>,
+        F: FnMut(&mut Transaction) -> TxResult<R>,
     {
         let mut conn = Self::instance()?.connection()?;
 
@@ -61,14 +61,13 @@ impl Database {
         Ok(res)
     }
 
-    pub fn run<F, R>(f: F) -> Result<R>
+    pub fn run_in_connection<F, R>(mut f: F) -> Result<R>
     where
-        F: FnOnce(&mut PooledConnection<SqliteConnectionManager>) -> TxResult<R>,
+        F: FnMut(&mut PooledConnection<SqliteConnectionManager>) -> TxResult<R>,
     {
         let mut conn = Self::instance()?.connection()?;
 
         let res = f(&mut conn).map_err(DatabaseError::RunningOnConnection)?;
-
         Ok(res)
     }
 

@@ -1,6 +1,5 @@
 use std::marker::PhantomData;
 
-use crate::database::Database;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
@@ -43,9 +42,9 @@ where
         self
     }
 
-    pub fn execute_in_tx(
+    pub fn execute_in_conn(
         &self,
-        tx: &crate::rusqlite::Transaction,
+        conn: &crate::rusqlite::Connection,
     ) -> crate::database::errors::Result<usize> {
         let mut sentence = format!("DELETE FROM {}.{} ", T::SCHEMA, T::TABLE_NAME);
 
@@ -55,15 +54,11 @@ where
         }
 
         Self::log_query_start(&sentence, &params);
-        let deleted = tx
+        let deleted = conn
             .execute(&sentence, params_from_iter(params))
             .map_err(DatabaseError::Delete)?;
         Self::log_query_ending(deleted, "Deleted");
 
         Ok(deleted)
-    }
-
-    pub fn execute(&self) -> crate::database::errors::Result<usize> {
-        Database::run_in_transaction(|tx| Ok(self.execute_in_tx(tx)?))
     }
 }

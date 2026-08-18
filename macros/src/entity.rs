@@ -677,34 +677,34 @@ fn build_entity_with_relationships_trait_impl(
             // Relación Option<T> => se espera como mucho una fila (fetch_one); Vec<T> => varias.
             let fn_inv = if rel.by_id {
                 quote! {
-                    fetch_one_in_tx
+                    fetch_one_in_conn
                 }
             } else {
                 quote! {
-                    fetch_in_tx
+                    fetch_in_conn
                 }
             };
 
             let fn_name = format_ident!("fetch_{}_relationship", field);
-            let fn_name_tx = format_ident!("fetch_{}_relationship_in_tx", field);
+            let fn_name_conn = format_ident!("fetch_{}_relationship_in_conn", field);
 
             let doc = format!("Load relationship for {} field", field);
-            let doc_tx = format!("{} in tx", doc);
+            let doc_conn = format!("{} in conn", doc);
 
             quote! {
                 #[doc = #doc]
                 pub fn #fn_name(&mut self) -> rusqlite_orm::database::errors::Result<()>{
-                    rusqlite_orm::database::Database::run_in_transaction(|tx| Ok(self.#fn_name_tx(tx)?))
+                    rusqlite_orm::database::Database::run_in_connection(|conn| {
+                        let res = self.#fn_name_conn(conn)?;
+                        Ok(res)
+                    })
                 }
 
-                #[doc = #doc_tx]
-                pub fn #fn_name_tx(
-                    &mut self,
-                    tx: &rusqlite_orm::rusqlite::Transaction,
-                ) -> rusqlite_orm::database::errors::Result<()>{
+                #[doc = #doc_conn]
+                pub fn #fn_name_conn(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::database::errors::Result<()>{
                     self.#field = <<#ty as rusqlite_orm::dao::Entity>::Repository as rusqlite_orm::dao::Repository<#ty>>::select().
                     where_(#condition)
-                    .#fn_inv(tx)?;
+                    .#fn_inv(conn)?;
                     Ok(())
                 }
             }
@@ -747,34 +747,34 @@ fn build_primary_key_impl(
     quote! {
             #[doc = "Update row by primary key"]
             pub fn update_by_id(&self) -> rusqlite_orm::database::errors::Result<()> {
-                rusqlite_orm::database::Database::run_in_transaction(|tx| Ok(self.update_by_id_in_tx(tx)?))
+                rusqlite_orm::database::Database::run_in_connection(|conn| {
+                    let res = self.update_by_id_in_conn(conn)?;
+                    Ok(res)
+                })
             }
 
-            #[doc = "Update row by primary key in transaction"]
-            pub fn update_by_id_in_tx(
-                &self,
-                tx: &rusqlite_orm::rusqlite::Transaction,
-            ) -> rusqlite_orm::database::errors::Result<()> {
+            #[doc = "Update row by primary key in connection"]
+            pub fn update_by_id_in_conn(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::database::errors::Result<()> {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::update()
                     #(#update_sets)*
                     .where_(#update_delete_condition)
-                    .execute_in_tx(tx)?;
+                    .execute_in_conn(conn)?;
                 Ok(())
             }
 
             #[doc = "Delete row by primary key"]
             pub fn delete_by_id(&self) -> rusqlite_orm::database::errors::Result<()> {
-                rusqlite_orm::database::Database::run_in_transaction(|tx| Ok(self.delete_by_id_in_tx(tx)?))
+                rusqlite_orm::database::Database::run_in_connection(|conn| {
+                    let res = self.delete_by_id_in_conn(conn)?;
+                    Ok(res)
+                })
             }
 
-            #[doc = "Delete row by primary key in transaction"]
-            pub fn delete_by_id_in_tx(
-                &self,
-                tx: &rusqlite_orm::rusqlite::Transaction,
-            ) -> rusqlite_orm::database::errors::Result<()> {
+            #[doc = "Delete row by primary key in connection"]
+            pub fn delete_by_id_in_conn(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::database::errors::Result<()> {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::delete()
                     .where_(#update_delete_condition)
-                    .execute_in_tx(tx)?;
+                    .execute_in_conn(conn)?;
                 Ok(())
             }
     }
@@ -803,16 +803,18 @@ fn repository_build_primary_key_impl(
             pub fn exists(
                 #(#by_id_params),*
             ) -> rusqlite_orm::database::errors::Result<bool> {
-                rusqlite_orm::database::Database::run_in_transaction(|tx| Ok(Self::exists_in_tx(tx, #id_condition_names)?))
+                rusqlite_orm::database::Database::run_in_connection(|conn| {
+                    let res = Self::exists_in_conn(conn, #id_condition_names)?;
+                    Ok(res)
+                })
             }
-            #[doc = "Checks if row exists in transaction"]
-            pub fn exists_in_tx(
-                tx: &rusqlite_orm::rusqlite::Transaction,
+            #[doc = "Checks if row exists in connection"]
+            pub fn exists_in_conn(conn: &rusqlite_orm::rusqlite::Connection,
                 #(#by_id_params),*
             ) -> rusqlite_orm::database::errors::Result<bool> {
                 let count = <Self as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#id_condition)
-                    .count_in_tx(tx)?;
+                    .count_in_conn(conn)?;
                 Ok(count>0)
             }
 
@@ -820,17 +822,20 @@ fn repository_build_primary_key_impl(
             pub fn select_by_id(
                 #(#by_id_params),*
             ) -> rusqlite_orm::database::errors::Result<Option<#struct_name>> {
-                rusqlite_orm::database::Database::run_in_transaction(|tx| Ok(Self::select_by_id_in_tx(tx, #id_condition_names)?))
+                rusqlite_orm::database::Database::run_in_connection(|conn| {
+                    let res = Self::select_by_id_in_conn(conn, #id_condition_names)?;
+                    Ok(res)
+                })
             }
 
-            #[doc = "Fetch row by primary key in transaction"]
-            pub fn select_by_id_in_tx(
-                tx: &rusqlite_orm::rusqlite::Transaction,
+            #[doc = "Fetch row by primary key in connection"]
+            pub fn select_by_id_in_conn(
+                conn: &rusqlite_orm::rusqlite::Connection,
                 #(#by_id_params),*
             ) -> rusqlite_orm::database::errors::Result<Option<#struct_name>> {
                 Ok(<Self as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#id_condition)
-                    .fetch_in_tx(tx)?
+                    .fetch_in_conn(conn)?
                     .into_iter()
                     .next())
             }
@@ -847,8 +852,8 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             "select_by_{}",
             index.name,
         );
-        let fn_name_tx = format_ident!(
-            "{}_in_tx",
+        let fn_name_conn = format_ident!(
+            "{}_in_conn",
             fn_name,
         );
         let fn_name_count = format_ident!(
@@ -856,8 +861,8 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             if index.unique {"exists"} else {"count"},
             index.name,
         );
-        let fn_name_count_tx = format_ident!(
-            "{}_in_tx",
+        let fn_name_count_conn = format_ident!(
+            "{}_in_conn",
             fn_name_count,
         );
 
@@ -872,9 +877,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
 
         let idx_col_names_idents = index.columns.iter().map(|i| i.ident.clone()).collect::<Vec<syn::Ident>>();
         let doc1=format!("Fetch row{} by {} index", if index.unique {""} else {"s"}, index.name);
-        let doc2=format!("{} in transaction", doc1);
         let doc3=format!("{} by {} index", if index.unique {"Exists"} else {"Count rows"}, index.name);
-        let doc4=format!("{} in transaction", doc3);
 
         let order_by_arg = if index.unique {
             quote! {}
@@ -907,12 +910,12 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
         let cnt_impl = if index.unique{
             quote!{
                 Ok(<#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
-                    .where_(#condition).count_in_tx(tx)?>0)
+                    .where_(#condition).count_in_conn(conn)?>0)
             }
         } else {
             quote! {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
-                    .where_(#condition).count_in_tx(tx)
+                    .where_(#condition).count_in_conn(conn)
             }
         };
 
@@ -935,32 +938,39 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
         };
         
         let fetch_inv = if index.unique {
-            quote!{fetch_one_in_tx(tx)}
+            quote!{fetch_one_in_conn(conn)}
         } else {
-            quote! {fetch_in_tx(tx)}
+            quote! {fetch_in_conn(conn)}
         };
 
         quote! {
             #[doc = #doc1]
             pub fn #fn_name(#(#select_params),* #order_by_arg) -> rusqlite_orm::database::errors::Result<#ret_type> {
-                rusqlite_orm::database::Database::run_in_transaction(|tx| Ok(Self::#fn_name_tx(tx, #(#idx_col_names_idents),* #order_by_param)?))
+                rusqlite_orm::database::Database::run_in_connection(|conn| {
+                    let res = Self::#fn_name_conn(conn, #(#idx_col_names_idents),* #order_by_param)?;
+                    Ok(res)
+                })
             }
-
-            #[doc = #doc2]
-            pub fn #fn_name_tx(tx: &rusqlite_orm::rusqlite::Transaction, #(#select_params),* #order_by_arg) -> rusqlite_orm::database::errors::Result<#ret_type> {
+            
+            #[doc = #doc1]
+            pub fn #fn_name_conn(conn: &rusqlite_orm::rusqlite::Connection, #(#select_params),* #order_by_arg) -> rusqlite_orm::database::errors::Result<#ret_type> {
                 let mut builder = <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#condition);
                 #add_order_by
                 builder.#fetch_inv
             }
 
+
             #[doc = #doc3]
             pub fn #fn_name_count(#(#select_params),*) -> rusqlite_orm::database::errors::Result<#cnt_ret_type> {
-                rusqlite_orm::database::Database::run_in_transaction(|tx| Ok(Self::#fn_name_count_tx(tx, #(#idx_col_names_idents),*)?))
+                rusqlite_orm::database::Database::run_in_connection(|conn| {
+                    let res = Self::#fn_name_count_conn(conn, #(#idx_col_names_idents),*)?;
+                    Ok(res)
+                })
             }
 
-            #[doc = #doc4]
-            pub fn #fn_name_count_tx(tx: &rusqlite_orm::rusqlite::Transaction, #(#select_params),*) -> rusqlite_orm::database::errors::Result<#cnt_ret_type> {
+            #[doc = #doc3]
+            pub fn #fn_name_count_conn(conn: &rusqlite_orm::rusqlite::Connection, #(#select_params),*) -> rusqlite_orm::database::errors::Result<#cnt_ret_type> {
                 #cnt_impl
             }
         }
