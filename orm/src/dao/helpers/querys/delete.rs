@@ -56,9 +56,10 @@ where
     ) -> crate::database::errors::Result<usize> {
         let mut sentence = format!("DELETE FROM {}.{} ", T::SCHEMA, T::TABLE_NAME);
 
-        let params: Vec<Value> = Vec::new();
+        let mut params: Vec<Value> = Vec::new();
         if let Some(cond) = &self.condition {
-            sentence.push_str(&format!(" WHERE {}", cond.to_sql()));
+            sentence.push_str(&format!("WHERE {}", cond.to_sql()));
+            params = cond.clone().into_params();
         }
 
         Self::log_query_start(&sentence, &params);
