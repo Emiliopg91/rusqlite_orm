@@ -42,15 +42,15 @@ where
     }
 
     pub fn execute(&self) -> crate::database::errors::Result<usize> {
-        Database::run_in_connection(|conn| {
-            let res = self.execute_in(conn)?;
+        Database::run_in_transaction(|tx| {
+            let res = self.execute_in(tx)?;
             Ok(res)
         })
     }
 
     pub fn execute_in(
         &self,
-        conn: &crate::rusqlite::Connection,
+        tx: &crate::rusqlite::Transaction,
     ) -> crate::database::errors::Result<usize> {
         let mut sentence = "INSERT ".to_string();
 
@@ -82,7 +82,7 @@ where
             .collect::<Vec<Value>>();
 
         Self::log_query_start(&sentence, &values);
-        let inserted = conn
+        let inserted = tx
             .execute(&sentence, params_from_iter(values.iter()))
             .map_err(DatabaseError::Insert)?;
         Self::log_query_ending(inserted, "Inserted");

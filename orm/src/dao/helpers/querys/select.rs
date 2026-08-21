@@ -159,7 +159,7 @@ where
         let total: i64 = conn
             .query_row(&sentence, params_from_iter(params), |row| row.get(0))
             .map_err(DatabaseError::Select)?;
-        Self::log_query_ending(1, "Counted ");
+        Self::log_query_ending(total as usize, "Counted");
 
         Ok(total)
     }

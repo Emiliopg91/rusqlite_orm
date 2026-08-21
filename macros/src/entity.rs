@@ -747,34 +747,34 @@ fn build_primary_key_impl(
     quote! {
             #[doc = "Update row by primary key"]
             pub fn update_by_id(&self) -> rusqlite_orm::database::errors::Result<()> {
-                rusqlite_orm::database::Database::run_in_connection(|conn| {
-                    let res = self.update_by_id_in(conn)?;
+                rusqlite_orm::database::Database::run_in_transaction(|tx| {
+                    let res = self.update_by_id_in(tx)?;
                     Ok(res)
                 })
             }
 
             #[doc = "Update row by primary key in connection"]
-            pub fn update_by_id_in(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::database::errors::Result<()> {
+            pub fn update_by_id_in(&self, tx: &rusqlite_orm::rusqlite::Transaction) -> rusqlite_orm::database::errors::Result<()> {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::update()
                     #(#update_sets)*
                     .where_(#update_delete_condition)
-                    .execute_in(conn)?;
+                    .execute_in(tx)?;
                 Ok(())
             }
 
             #[doc = "Delete row by primary key"]
             pub fn delete_by_id(&self) -> rusqlite_orm::database::errors::Result<()> {
-                rusqlite_orm::database::Database::run_in_connection(|conn| {
-                    let res = self.delete_by_id_in(conn)?;
+                rusqlite_orm::database::Database::run_in_transaction(|tx| {
+                    let res = self.delete_by_id_in(tx)?;
                     Ok(res)
                 })
             }
 
             #[doc = "Delete row by primary key in connection"]
-            pub fn delete_by_id_in(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::database::errors::Result<()> {
+            pub fn delete_by_id_in(&self, tx: &rusqlite_orm::rusqlite::Transaction) -> rusqlite_orm::database::errors::Result<()> {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::delete()
                     .where_(#update_delete_condition)
-                    .execute_in(conn)?;
+                    .execute_in(tx)?;
                 Ok(())
             }
     }

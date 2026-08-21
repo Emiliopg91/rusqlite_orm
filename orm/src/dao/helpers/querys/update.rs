@@ -49,15 +49,15 @@ where
     }
 
     pub fn execute(&self) -> crate::database::errors::Result<usize> {
-        Database::run_in_connection(|conn| {
-            let res = self.execute_in(conn)?;
+        Database::run_in_transaction(|tx| {
+            let res = self.execute_in(tx)?;
             Ok(res)
         })
     }
 
     pub fn execute_in(
         &self,
-        conn: &crate::rusqlite::Connection,
+        tx: &crate::rusqlite::Transaction,
     ) -> crate::database::errors::Result<usize> {
         let mut sentence = format!("UPDATE {}.{} SET ", T::SCHEMA, T::TABLE_NAME);
         sentence.push_str(
@@ -84,7 +84,7 @@ where
         params.extend(cond_params);
 
         Self::log_query_start(&sentence, &params);
-        let updated = conn
+        let updated = tx
             .execute(&sentence, params_from_iter(params))
             .map_err(DatabaseError::Update)?;
         Self::log_query_ending(updated, "Updated");
