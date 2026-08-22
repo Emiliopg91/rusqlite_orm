@@ -14,6 +14,7 @@ use crate::{
 pub struct InsertBuilder<T> {
     items: Vec<T>,
     or_ignore: bool,
+    or_replace: bool,
     _marker: PhantomData<T>,
 }
 
@@ -22,6 +23,7 @@ impl<T> QueryBuilder<T> for InsertBuilder<T> {
         InsertBuilder {
             items: Vec::new(),
             or_ignore: false,
+            or_replace: false,
             _marker: PhantomData,
         }
     }
@@ -36,8 +38,13 @@ where
         self
     }
 
-    pub fn or_ignore(mut self, or_ignore: bool) -> Self {
-        self.or_ignore = or_ignore;
+    pub fn or_replace(mut self) -> Self {
+        self.or_replace = true;
+        self
+    }
+
+    pub fn or_ignore(mut self) -> Self {
+        self.or_ignore = true;
         self
     }
 
@@ -56,6 +63,10 @@ where
 
         if self.or_ignore {
             sentence.push_str("OR IGNORE ");
+        } else {
+            if self.or_replace {
+                sentence.push_str("OR REPLACE ");
+            }
         }
 
         sentence.push_str(&format!(
