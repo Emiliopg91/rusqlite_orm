@@ -72,6 +72,8 @@ impl Database {
     }
 
     pub fn create_schema(ddls: &[DdlVersion]) -> Result<()> {
+        let mut ddls: Vec<DdlVersion> = ddls.to_vec();
+        ddls.sort_by_key(|ddl| ddl.version);
         let updated = Self::run_in_transaction(|tx| {
             let current_version: u16 = tx
                 .pragma_query_value(None, "user_version", |r| r.get(0))
