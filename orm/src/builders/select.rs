@@ -1,6 +1,6 @@
 use std::marker::PhantomData;
 
-use crate::database::DatabaseConnection;
+use crate::database::DatabasePool;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
@@ -122,14 +122,14 @@ where
         Ok(res.into_iter().next())
     }
 
-    pub fn fetch_one(&self, db: &DatabaseConnection) -> crate::errors::Result<Option<T>> {
+    pub fn fetch_one(&self, db: &DatabasePool) -> crate::errors::Result<Option<T>> {
         db.run_in_connection(|conn| {
             let res = self.fetch_one_in(conn)?;
             Ok(res)
         })
     }
 
-    pub fn count(&self, db: &DatabaseConnection) -> crate::errors::Result<i64> {
+    pub fn count(&self, db: &DatabasePool) -> crate::errors::Result<i64> {
         db.run_in_connection(|conn| {
             let res = self.count_in(conn)?;
             Ok(res)

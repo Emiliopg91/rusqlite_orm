@@ -1,4 +1,4 @@
-use crate::database::DatabaseConnection;
+use crate::database::DatabasePool;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
@@ -44,7 +44,7 @@ where
         self
     }
 
-    pub fn execute(&self, db: &DatabaseConnection) -> crate::errors::Result<usize> {
+    pub fn execute(&self, db: &DatabasePool) -> crate::errors::Result<usize> {
         db.run_in_transaction(|tx| {
             let res = self.execute_in(tx)?;
             Ok(res)
