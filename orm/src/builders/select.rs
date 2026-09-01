@@ -1,17 +1,13 @@
 use std::marker::PhantomData;
 
-use crate::database::Database;
+use crate::database::DatabaseConnection;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
-    dao::{
-        Entity,
-        helpers::{
-            querys::QueryBuilder,
-            types::{order_by::OrderBy, where_clause::Where},
-        },
-    },
-    database::errors::DatabaseError,
+    builders::QueryBuilder,
+    dao::Entity,
+    errors::DatabaseError,
+    types::{order_by::OrderBy, where_clause::Where},
 };
 
 pub struct SelectBuilder<T>
@@ -64,10 +60,7 @@ where
         self
     }
 
-    pub fn fetch_in(
-        &self,
-        conn: &crate::rusqlite::Connection,
-    ) -> crate::database::errors::Result<Vec<T>> {
+    pub fn fetch_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<Vec<T>> {
         let mut sentence = format!(
             "SELECT {} FROM {}.{}",
             T::FIELDS
@@ -124,29 +117,26 @@ where
     pub fn fetch_one_in(
         &self,
         conn: &crate::rusqlite::Connection,
-    ) -> crate::database::errors::Result<Option<T>> {
+    ) -> crate::errors::Result<Option<T>> {
         let res = self.fetch_in(conn)?;
         Ok(res.into_iter().next())
     }
 
-    pub fn fetch_one(&self) -> crate::database::errors::Result<Option<T>> {
-        Database::run_in_connection(|conn| {
+    pub fn fetch_one(&self, db: DatabaseConnection) -> crate::errors::Result<Option<T>> {
+        db.run_in_connection(|conn| {
             let res = self.fetch_one_in(conn)?;
             Ok(res)
         })
     }
 
-    pub fn count(&self) -> crate::database::errors::Result<i64> {
-        Database::run_in_connection(|conn| {
+    pub fn count(&self, db: DatabaseConnection) -> crate::errors::Result<i64> {
+        db.run_in_connection(|conn| {
             let res = self.count_in(conn)?;
             Ok(res)
         })
     }
 
-    pub fn count_in(
-        &self,
-        conn: &crate::rusqlite::Connection,
-    ) -> crate::database::errors::Result<i64> {
+    pub fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
         let mut sentence = format!("SELECT COUNT(*) FROM {}.{}", T::SCHEMA, T::TABLE_NAME);
 
         let mut params = Vec::new();

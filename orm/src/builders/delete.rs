@@ -1,17 +1,13 @@
 use std::marker::PhantomData;
 
-use crate::database::Database;
+use crate::database::DatabaseConnection;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
-    dao::{
-        Entity,
-        helpers::{
-            querys::QueryBuilder,
-            types::{value::Value, where_clause::Where},
-        },
-    },
-    database::errors::DatabaseError,
+    builders::QueryBuilder,
+    dao::Entity,
+    errors::DatabaseError,
+    types::{value::Value, where_clause::Where},
 };
 
 pub struct DeleteBuilder<T>
@@ -43,17 +39,14 @@ where
         self
     }
 
-    pub fn execute(&self) -> crate::database::errors::Result<usize> {
-        Database::run_in_transaction(|tx| {
+    pub fn execute(&self, db: DatabaseConnection) -> crate::errors::Result<usize> {
+        db.run_in_transaction(|tx| {
             let res = self.execute_in(tx)?;
             Ok(res)
         })
     }
 
-    pub fn execute_in(
-        &self,
-        tx: &crate::rusqlite::Transaction,
-    ) -> crate::database::errors::Result<usize> {
+    pub fn execute_in(&self, tx: &crate::rusqlite::Transaction) -> crate::errors::Result<usize> {
         let mut sentence = format!("DELETE FROM {}.{} ", T::SCHEMA, T::TABLE_NAME);
 
         let mut params: Vec<Value> = Vec::new();

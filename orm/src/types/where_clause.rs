@@ -1,4 +1,4 @@
-use crate::dao::{Entity, helpers::types::value::Value};
+use crate::{dao::Entity, types::value::Value};
 
 use super::column_name::ColumnName;
 

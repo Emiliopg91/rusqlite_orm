@@ -1,16 +1,12 @@
 #![allow(dead_code)]
 
-pub mod helpers;
-
-use crate::dao::helpers::{
-    querys::{
+use crate::{
+    builders::{
         QueryBuilder, delete::DeleteBuilder, insert::InsertBuilder, select::SelectBuilder,
         update::UpdateBuilder,
     },
-    types::{schema::Schema, table_name::TableName},
+    types::{column_name::ColumnName, schema::Schema, table_name::TableName, value::Value},
 };
-
-use self::helpers::types::{column_name::ColumnName, value::Value};
 
 pub trait Entity: Sized + 'static {
     const SCHEMA: &'static Schema<Self>;
@@ -21,7 +17,7 @@ pub trait Entity: Sized + 'static {
 
     fn get_values(&self) -> Vec<Value>;
     fn map_from_row(row: &crate::rusqlite::Row) -> Result<Self, crate::rusqlite::Error>;
-    fn after_map_from_row() -> crate::database::errors::Result<()> {
+    fn after_map_from_row() -> crate::errors::Result<()> {
         Ok(())
     }
 }
