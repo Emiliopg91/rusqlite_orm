@@ -52,23 +52,29 @@ impl Default for DatabaseConnectionBuilder {
 }
 
 impl DatabaseConnectionBuilder {
-    pub fn location<P>(&mut self, value: P) where P: AsRef<Path>{
+    pub fn location<P>(mut self, value: P) -> Self where P: AsRef<Path>{
         self.location=Some(value.as_ref().to_path_buf());
+        self
     }
-    pub fn pool_size(&mut self, value: u32){
+    pub fn pool_size(mut self, value: u32) -> Self {
         self.pool_size=value;
+        self
     }
-    pub fn connection_timeout(&mut self, value: u64){
+    pub fn connection_timeout(mut self, value: u64) -> Self {
         self.connection_timeout=value;
+        self
     }
-    pub fn busy_timeout(&mut self, value: u64){
+    pub fn busy_timeout(mut self, value: u64) -> Self {
         self.busy_timeout=value;
+        self
     }
-    pub fn enable_foreign_keys(&mut self) {
+    pub fn enable_foreign_keys(mut self) -> Self {
         self.foreign_keys = true;
+        self
     } 
-    pub fn journal_mode(&mut self, value: JournalMode) {
-        self.journal_mode = value
+    pub fn journal_mode(mut self, value: JournalMode) -> Self {
+        self.journal_mode = value;
+        self
     }
 
     pub fn build(self) -> Result<DatabaseConnection> {

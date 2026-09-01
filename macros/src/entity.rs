@@ -735,7 +735,7 @@ fn build_entity_with_relationships_trait_impl(
 
             quote! {
                 #[doc = #doc]
-                pub fn #fn_name(&mut self,db: rusqlite_orm::database::DatabaseConnection) -> rusqlite_orm::errors::Result<()>{
+                pub fn #fn_name(&mut self,db: &rusqlite_orm::database::DatabaseConnection) -> rusqlite_orm::errors::Result<()>{
                     db.run_in_connection(|conn| {
                         let res = self.#fn_name_conn(conn)?;
                         Ok(res)
@@ -788,7 +788,7 @@ fn build_primary_key_impl(
 
     quote! {
             #[doc = "Update row by primary key"]
-            pub fn update_by_id(&self,db: rusqlite_orm::database::DatabaseConnection, ) -> rusqlite_orm::errors::Result<()> {
+            pub fn update_by_id(&self,db: &rusqlite_orm::database::DatabaseConnection, ) -> rusqlite_orm::errors::Result<()> {
                 db.run_in_transaction(|tx| {
                     let res = self.update_by_id_in(tx)?;
                     Ok(res)
@@ -805,7 +805,7 @@ fn build_primary_key_impl(
             }
 
             #[doc = "Delete row by primary key"]
-            pub fn delete_by_id(&self, db: rusqlite_orm::database::DatabaseConnection) -> rusqlite_orm::errors::Result<()> {
+            pub fn delete_by_id(&self, db: &rusqlite_orm::database::DatabaseConnection) -> rusqlite_orm::errors::Result<()> {
                 db.run_in_transaction(|tx| {
                     let res = self.delete_by_id_in(tx)?;
                     Ok(res)
@@ -843,7 +843,7 @@ fn repository_build_primary_key_impl(
     quote! {
             #[doc = "Checks if row exists"]
             pub fn exists(
-                db: rusqlite_orm::database::DatabaseConnection, 
+                db: &rusqlite_orm::database::DatabaseConnection, 
                 #(#by_id_params),*
             ) -> rusqlite_orm::errors::Result<bool> {
                 db.run_in_connection(|conn| {
@@ -863,7 +863,7 @@ fn repository_build_primary_key_impl(
 
             #[doc = "Fetch row by primary key"]
             pub fn select_by_id(
-                db: rusqlite_orm::database::DatabaseConnection, 
+                db: &rusqlite_orm::database::DatabaseConnection, 
                 #(#by_id_params),*
             ) -> rusqlite_orm::errors::Result<Option<#struct_name>> {
                 db.run_in_connection(|conn| {
@@ -987,7 +987,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
 
         quote! {
             #[doc = #doc1]
-            pub fn #fn_name(db: rusqlite_orm::database::DatabaseConnection, #(#select_params),* #order_by_arg) -> rusqlite_orm::errors::Result<#ret_type> {
+            pub fn #fn_name(db: &rusqlite_orm::database::DatabaseConnection, #(#select_params),* #order_by_arg) -> rusqlite_orm::errors::Result<#ret_type> {
                 db.run_in_connection(|conn| {
                     let res = Self::#fn_name_conn(conn, #(#idx_col_names_idents),* #order_by_param)?;
                     Ok(res)
@@ -1003,7 +1003,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
 
 
             #[doc = #doc3]
-            pub fn #fn_name_count(db: rusqlite_orm::database::DatabaseConnection, #(#select_params),*) -> rusqlite_orm::errors::Result<#cnt_ret_type> {
+            pub fn #fn_name_count(db: &rusqlite_orm::database::DatabaseConnection, #(#select_params),*) -> rusqlite_orm::errors::Result<#cnt_ret_type> {
                 db.run_in_connection(|conn| {
                     let res = Self::#fn_name_count_conn(conn, #(#idx_col_names_idents),*)?;
                     Ok(res)

@@ -39,7 +39,7 @@ where
         self
     }
 
-    pub fn execute(&self, db: DatabaseConnection) -> crate::errors::Result<usize> {
+    pub fn execute(&self, db: &DatabaseConnection) -> crate::errors::Result<usize> {
         db.run_in_transaction(|tx| {
             let res = self.execute_in(tx)?;
             Ok(res)
