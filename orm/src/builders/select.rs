@@ -7,13 +7,17 @@ use crate::{
     builders::QueryBuilder,
     dao::Entity,
     errors::DatabaseError,
-    types::{order_by::OrderBy, where_clause::Where},
+    types::{
+        column_name::ColumnName, order_by::OrderBy, subquery::Subquery, value::Value,
+        where_clause::Where,
+    },
 };
 
 pub struct SelectBuilder<T>
 where
     T: Entity,
 {
+    columns: Option<Vec<ColumnName<T>>>,
     condition: Option<Where<T>>,
     order: Vec<OrderBy<T>>,
     limit: Option<u32>,
@@ -27,6 +31,7 @@ where
 {
     fn new() -> Self {
         Self {
+            columns: None,
             condition: None,
             order: Vec::new(),
             limit: None,
@@ -45,6 +50,13 @@ where
         self
     }
 
+    /// Restricts the SELECT projection to a single column. Intended for building
+    /// scalar/list subqueries via [`Self::to_subquery`] (e.g. `col IN (SELECT ...)`).
+    pub fn column(mut self, column: ColumnName<T>) -> Self {
+        self.columns = Some(vec![column]);
+        self
+    }
+
     pub fn order_by(mut self, order: OrderBy<T>) -> Self {
         self.order.push(order);
         self
@@ -60,17 +72,21 @@ where
         self
     }
 
-    pub fn fetch_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<Vec<T>> {
-        let mut sentence = format!(
-            "SELECT {} FROM {}.{}",
-            T::FIELDS
+    fn build_sql(&self) -> (String, Vec<Value>) {
+        let fields = match &self.columns {
+            Some(cols) => cols
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<String>>()
+                .join(", "),
+            None => T::FIELDS
                 .iter()
                 .map(|f| f.as_ref().to_string())
                 .collect::<Vec<String>>()
                 .join(", "),
-            T::SCHEMA,
-            T::TABLE_NAME
-        );
+        };
+
+        let mut sentence = format!("SELECT {} FROM {}.{}", fields, T::SCHEMA, T::TABLE_NAME);
 
         let mut params = Vec::new();
         if let Some(condition) = &self.condition {
@@ -97,6 +113,19 @@ where
         if let Some(offset) = self.offset {
             sentence.push_str(&format!(" OFFSET {}", offset));
         }
+
+        (sentence, params)
+    }
+
+    /// Renders this SELECT as a [`Subquery`] so it can be embedded in another
+    /// entity's `Where` condition, e.g. `Where::InSub(Other::COL, builder.column(Foo::ID).to_subquery())`.
+    pub fn to_subquery(&self) -> Subquery {
+        let (sql, params) = self.build_sql();
+        Subquery::new(sql, params)
+    }
+
+    pub fn fetch_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<Vec<T>> {
+        let (sentence, params) = self.build_sql();
 
         Self::log_query_start(&sentence, &params);
         let mut stmt = conn

@@ -1,6 +1,7 @@
 use crate::{dao::Entity, types::value::Value};
 
 use super::column_name::ColumnName;
+use super::subquery::Subquery;
 
 pub enum Where<T>
 where
@@ -14,6 +15,10 @@ where
     InMultiple(Vec<ColumnName<T>>, Vec<Vec<Value>>),
     Null(ColumnName<T>),
     NotNull(ColumnName<T>),
+    EqSub(ColumnName<T>, Subquery),
+    NotEqSub(ColumnName<T>, Subquery),
+    InSub(ColumnName<T>, Subquery),
+    NotInSub(ColumnName<T>, Subquery),
     And(Vec<Where<T>>),
     Or(Vec<Where<T>>),
 }
@@ -59,6 +64,18 @@ where
             Self::NotNull(col) => {
                 format!("{} IS NOT NULL", col)
             }
+            Self::EqSub(col, sub) => {
+                format!("{}=({})", col, sub.sql)
+            }
+            Self::NotEqSub(col, sub) => {
+                format!("{}!=({})", col, sub.sql)
+            }
+            Self::InSub(col, sub) => {
+                format!("{} IN ({})", col, sub.sql)
+            }
+            Self::NotInSub(col, sub) => {
+                format!("{} NOT IN ({})", col, sub.sql)
+            }
             Self::And(conditions) => conditions
                 .clone()
                 .into_iter()
@@ -103,6 +120,8 @@ where
             Self::Null(_) | Self::NotNull(_) => {
                 vec![]
             }
+            Self::EqSub(_, sub) | Self::NotEqSub(_, sub) => sub.params,
+            Self::InSub(_, sub) | Self::NotInSub(_, sub) => sub.params,
             Self::And(conditions) | Self::Or(conditions) => {
                 let mut params = vec![];
                 for condition in conditions {
@@ -128,6 +147,10 @@ where
             Self::InMultiple(cols, vals) => Self::InMultiple(cols.clone(), vals.clone()),
             Self::Null(col) => Self::Null(*col),
             Self::NotNull(col) => Self::NotNull(*col),
+            Self::EqSub(col, sub) => Self::EqSub(*col, sub.clone()),
+            Self::NotEqSub(col, sub) => Self::NotEqSub(*col, sub.clone()),
+            Self::InSub(col, sub) => Self::InSub(*col, sub.clone()),
+            Self::NotInSub(col, sub) => Self::NotInSub(*col, sub.clone()),
             Self::And(conds) => Self::And(conds.clone()),
             Self::Or(conds) => Self::Or(conds.clone()),
         }
