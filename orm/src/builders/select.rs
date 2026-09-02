@@ -13,7 +13,10 @@ use crate::{
     },
 };
 
-pub struct SelectBuilder<T>
+pub struct Selectable;
+pub struct NonSelectable;
+
+pub struct SelectBuilder<T, K = Selectable>
 where
     T: Entity,
 {
@@ -22,10 +25,12 @@ where
     order: Vec<OrderBy<T>>,
     limit: Option<u32>,
     offset: Option<u32>,
-    _marker: PhantomData<T>,
+    distinct: Option<Vec<ColumnName<T>>>,
+    _marker_entity: PhantomData<T>,
+    _marker_kind: PhantomData<K>,
 }
 
-impl<T> QueryBuilder<T> for SelectBuilder<T>
+impl<T> QueryBuilder<T> for SelectBuilder<T, Selectable>
 where
     T: Entity,
 {
@@ -36,12 +41,32 @@ where
             order: Vec::new(),
             limit: None,
             offset: None,
-            _marker: PhantomData,
+            distinct: None,
+            _marker_entity: PhantomData,
+            _marker_kind: PhantomData,
         }
     }
 }
 
-impl<T> SelectBuilder<T>
+impl<T> SelectBuilder<T, NonSelectable>
+where
+    T: Entity,
+{
+    fn new(prev: SelectBuilder<T, Selectable>, fields: &[ColumnName<T>]) -> Self {
+        Self {
+            columns: prev.columns,
+            condition: prev.condition,
+            order: prev.order,
+            limit: prev.limit,
+            offset: prev.offset,
+            distinct: Some(fields.to_vec()),
+            _marker_entity: PhantomData,
+            _marker_kind: PhantomData,
+        }
+    }
+}
+
+impl<T, K> SelectBuilder<T, K>
 where
     T: Entity,
 {
@@ -73,18 +98,17 @@ where
     }
 
     fn build_sql(&self) -> (String, Vec<Value>) {
-        let fields = match &self.columns {
-            Some(cols) => cols
-                .iter()
-                .map(|c| c.to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-            None => T::FIELDS
-                .iter()
-                .map(|f| f.as_ref().to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-        };
+        let fields = match &self.distinct {
+            Some(fields) => fields,
+            None => match &self.columns {
+                Some(cols) => cols,
+                None => T::FIELDS,
+            },
+        }
+        .iter()
+        .map(|c| c.to_string())
+        .collect::<Vec<String>>()
+        .join(", ");
 
         let mut sentence = format!("SELECT {} FROM {}.{}", fields, T::SCHEMA, T::TABLE_NAME);
 
@@ -122,6 +146,15 @@ where
     pub fn to_subquery(&self) -> Subquery {
         let (sql, params) = self.build_sql();
         Subquery::new(sql, params)
+    }
+}
+
+impl<T> SelectBuilder<T, Selectable>
+where
+    T: Entity,
+{
+    pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonSelectable> {
+        SelectBuilder::<T, NonSelectable>::new(self, fields)
     }
 
     pub fn fetch_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<Vec<T>> {
