@@ -1,9 +1,15 @@
-use std::{path::Path, sync::{Arc, atomic::{AtomicU32, Ordering}}, time::Duration};
+use std::{path::Path, time::Duration};
 
 use log::debug;
 use r2d2_sqlite::SqliteConnectionManager;
 
-use crate::{database::{DatabasePool, builder::{DatabaseConnectionBuilder, DatabaseInFile, JournalMode}}, errors::Result};
+use crate::{
+    database::{
+        DatabasePool,
+        builder::{DatabaseConnectionBuilder, DatabaseInFile, JournalMode},
+    },
+    errors::Result,
+};
 
 #[derive(Clone)]
 pub enum InMemoryJournalMode {
@@ -23,7 +29,6 @@ impl From<InMemoryJournalMode> for JournalMode {
 /// TypeState marker: no database location has been set yet.
 #[derive(Clone)]
 pub struct DatabaseInMemory;
-
 
 impl DatabaseConnectionBuilder<DatabaseInMemory> {
     pub fn journal_mode(mut self, value: InMemoryJournalMode) -> Self {
@@ -53,20 +58,10 @@ impl DatabaseConnectionBuilder<DatabaseInMemory> {
         let pool_size = self.pool_size;
         let min_idle = self.min_idle;
         let label = ":memory:".to_string();
-        let conn_name = name.to_string();
-        let conn_counter = Arc::new(AtomicU32::new(0));
 
         debug!("Creating connection manager...");
         let manager = SqliteConnectionManager::memory().with_init(move |conn| {
-            let conn_id = conn_counter.fetch_add(1, Ordering::Relaxed);
-            Self::apply_pragmas(
-                &conn_name,
-                conn_id,
-                conn,
-                foreign_keys,
-                &journal_mode,
-                busy_timeout,
-            )
+            Self::apply_pragmas(conn, foreign_keys, &journal_mode, busy_timeout)
         });
         debug!("Connection manager created");
 

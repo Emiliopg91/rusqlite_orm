@@ -1,16 +1,15 @@
-pub mod in_memory;
 pub mod in_file;
+pub mod in_memory;
 
-use std::{
-    time::Duration,
-};
+use std::time::Duration;
 
 use log::debug;
-use r2d2::Pool;
+use r2d2::{HandleEvent, Pool};
 use r2d2_sqlite::{SqliteConnectionManager, rusqlite::Connection};
 
 use crate::{
-    database::{DatabasePool, builder::{in_memory::{DatabaseInMemory}}}, errors::{DatabaseError, Result},
+    database::{DatabasePool, builder::in_memory::DatabaseInMemory},
+    errors::{DatabaseError, Result},
 };
 
 #[derive(Clone)]
@@ -74,21 +73,11 @@ impl<L> DatabaseConnectionBuilder<L> {
     }
 
     fn apply_pragmas(
-        name: &str,
-        conn_id: u32,
         conn: &Connection,
         foreign_keys: bool,
         journal_mode: &JournalMode,
         busy_timeout: Duration,
     ) -> crate::rusqlite::Result<()> {
-        debug!(
-            "  Creating connection '{}::{}' with PRAGMAS foreign_keys={}, journal_mode={} and busy_timeout={}...",
-            name,
-            conn_id,
-            foreign_keys,
-            literal_for(journal_mode),
-            busy_timeout.as_millis()
-        );
         if foreign_keys {
             conn.execute_batch("PRAGMA foreign_keys = ON;")?
         }
@@ -98,7 +87,6 @@ impl<L> DatabaseConnectionBuilder<L> {
         ))?;
 
         let res = conn.busy_timeout(busy_timeout);
-        debug!("  Connection '{}::{}' created", name, conn_id);
 
         res
     }
@@ -113,7 +101,8 @@ impl<L> DatabaseConnectionBuilder<L> {
     ) -> Result<DatabasePool> {
         debug!(
             "Creating pool '{}' to '{}' with size: {} and connection timeout: {} ms ...",
-            name, label,
+            name,
+            label,
             pool_size,
             self.connection_timeout.as_millis()
         );
@@ -122,10 +111,34 @@ impl<L> DatabaseConnectionBuilder<L> {
             .max_size(pool_size)
             .min_idle(min_idle)
             .connection_timeout(self.connection_timeout)
+            .event_handler(Box::new(ConnectionLogger {
+                conn_name: name.to_string(),
+            }))
             .build(manager)
             .map_err(|e| DatabaseError::Connection(label, e))?;
         debug!("Pool '{}' created", name);
 
         Ok(DatabasePool { pool })
+    }
+}
+
+#[derive(Debug)]
+struct ConnectionLogger {
+    conn_name: String,
+}
+impl HandleEvent for ConnectionLogger {
+    fn handle_acquire(&self, event: r2d2::event::AcquireEvent) {
+        debug!(
+            "Acquired connection '{}::{}'...",
+            self.conn_name,
+            event.connection_id()
+        );
+    }
+    fn handle_release(&self, event: r2d2::event::ReleaseEvent) {
+        debug!(
+            "Released connection '{}::{}'...",
+            self.conn_name,
+            event.connection_id()
+        );
     }
 }
