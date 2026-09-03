@@ -25,7 +25,7 @@ where
     order: Vec<OrderBy<T>>,
     limit: Option<u32>,
     offset: Option<u32>,
-    distinct: Option<Vec<ColumnName<T>>>,
+    distinct: bool,
     _marker_entity: PhantomData<T>,
     _marker_kind: PhantomData<K>,
 }
@@ -41,25 +41,7 @@ where
             order: Vec::new(),
             limit: None,
             offset: None,
-            distinct: None,
-            _marker_entity: PhantomData,
-            _marker_kind: PhantomData,
-        }
-    }
-}
-
-impl<T> SelectBuilder<T, NonSelectable>
-where
-    T: Entity,
-{
-    fn new(prev: SelectBuilder<T, Selectable>, fields: &[ColumnName<T>]) -> Self {
-        Self {
-            columns: prev.columns,
-            condition: prev.condition,
-            order: prev.order,
-            limit: prev.limit,
-            offset: prev.offset,
-            distinct: Some(fields.to_vec()),
+            distinct: false,
             _marker_entity: PhantomData,
             _marker_kind: PhantomData,
         }
@@ -72,13 +54,6 @@ where
 {
     pub fn where_(mut self, condition: Where<T>) -> Self {
         self.condition = Some(condition);
-        self
-    }
-
-    /// Restricts the SELECT projection to a single column. Intended for building
-    /// scalar/list subqueries via [`Self::to_subquery`] (e.g. `col IN (SELECT ...)`).
-    pub fn column(mut self, column: ColumnName<T>) -> Self {
-        self.columns = Some(vec![column]);
         self
     }
 
@@ -98,12 +73,9 @@ where
     }
 
     fn build_sql(&self) -> (String, Vec<Value>) {
-        let fields = match &self.distinct {
-            Some(fields) => fields,
-            None => match &self.columns {
-                Some(cols) => cols,
-                None => T::FIELDS,
-            },
+        let fields = match &self.columns {
+            Some(cols) => cols,
+            None => T::FIELDS,
         }
         .iter()
         .map(|c| c.to_string())
@@ -149,12 +121,54 @@ where
     }
 }
 
+impl<T> SelectBuilder<T, NonSelectable>
+where
+    T: Entity,
+{
+    pub fn distinct(mut self, fields: &[ColumnName<T>]) -> Self {
+        self.columns = Some(fields.to_vec());
+        self
+    }
+
+    pub fn columns(mut self, fields: &[ColumnName<T>]) -> Self {
+        self.columns = Some(fields.to_vec());
+        self
+    }
+}
+
+impl<T> From<SelectBuilder<T, Selectable>> for SelectBuilder<T, NonSelectable>
+where
+    T: Entity,
+{
+    fn from(value: SelectBuilder<T, Selectable>) -> Self {
+        Self {
+            columns: value.columns,
+            condition: value.condition,
+            order: value.order,
+            limit: value.limit,
+            offset: value.offset,
+            distinct: value.distinct,
+            _marker_entity: PhantomData,
+            _marker_kind: PhantomData,
+        }
+    }
+}
+
 impl<T> SelectBuilder<T, Selectable>
 where
     T: Entity,
 {
     pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonSelectable> {
-        SelectBuilder::<T, NonSelectable>::new(self, fields)
+        let mut inst = SelectBuilder::<T, NonSelectable>::from(self);
+        inst.columns = Some(fields.to_vec());
+        inst.distinct = true;
+        inst
+    }
+
+    pub fn columns(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonSelectable> {
+        let mut inst = SelectBuilder::<T, NonSelectable>::from(self);
+        inst.columns = Some(fields.to_vec());
+        inst
     }
 
     pub fn fetch_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<Vec<T>> {

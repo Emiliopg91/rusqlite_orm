@@ -18,6 +18,7 @@ where
     EqSub(ColumnName<T>, Subquery),
     NotEqSub(ColumnName<T>, Subquery),
     InSub(ColumnName<T>, Subquery),
+    InMultipleSub(Vec<ColumnName<T>>, Subquery),
     NotInSub(ColumnName<T>, Subquery),
     And(Vec<Where<T>>),
     Or(Vec<Where<T>>),
@@ -76,6 +77,15 @@ where
             Self::NotInSub(col, sub) => {
                 format!("{} NOT IN ({})", col, sub.sql)
             }
+            Self::InMultipleSub(cols, sub) => {
+                let col_list = cols
+                    .iter()
+                    .map(|c| c.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+
+                format!("({}) IN ({})", col_list, sub.sql)
+            }
             Self::And(conditions) => conditions
                 .clone()
                 .into_iter()
@@ -120,8 +130,6 @@ where
             Self::Null(_) | Self::NotNull(_) => {
                 vec![]
             }
-            Self::EqSub(_, sub) | Self::NotEqSub(_, sub) => sub.params,
-            Self::InSub(_, sub) | Self::NotInSub(_, sub) => sub.params,
             Self::And(conditions) | Self::Or(conditions) => {
                 let mut params = vec![];
                 for condition in conditions {
@@ -129,6 +137,11 @@ where
                 }
                 params
             }
+            Self::EqSub(_, sub)
+            | Self::NotEqSub(_, sub)
+            | Self::InSub(_, sub)
+            | Self::NotInSub(_, sub)
+            | Self::InMultipleSub(_, sub) => sub.params,
         }
     }
 }
@@ -150,6 +163,7 @@ where
             Self::EqSub(col, sub) => Self::EqSub(*col, sub.clone()),
             Self::NotEqSub(col, sub) => Self::NotEqSub(*col, sub.clone()),
             Self::InSub(col, sub) => Self::InSub(*col, sub.clone()),
+            Self::InMultipleSub(col, sub) => Self::InMultipleSub(col.clone(), sub.clone()),
             Self::NotInSub(col, sub) => Self::NotInSub(*col, sub.clone()),
             Self::And(conds) => Self::And(conds.clone()),
             Self::Or(conds) => Self::Or(conds.clone()),
