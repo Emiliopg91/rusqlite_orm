@@ -13,9 +13,9 @@ use crate::{
     },
 };
 
-pub struct Selectable;
+pub struct Mappeable;
 
-pub struct NonSelectable<T>
+pub struct NonMappeable<T>
 where
     T: Entity,
 {
@@ -30,7 +30,7 @@ where
     fn columns(&self) -> String;
 }
 
-impl<T> ColumnsOf<T> for Selectable
+impl<T> ColumnsOf<T> for Mappeable
 where
     T: Entity,
 {
@@ -43,7 +43,7 @@ where
     }
 }
 
-impl<T> ColumnsOf<T> for NonSelectable<T>
+impl<T> ColumnsOf<T> for NonMappeable<T>
 where
     T: Entity,
 {
@@ -63,7 +63,7 @@ where
     }
 }
 
-pub struct SelectBuilder<T, K = Selectable>
+pub struct SelectBuilder<T, K = Mappeable>
 where
     T: Entity,
 {
@@ -75,13 +75,13 @@ where
     _marker_entity: PhantomData<T>,
 }
 
-impl<T> QueryBuilder<T> for SelectBuilder<T, Selectable>
+impl<T> QueryBuilder<T> for SelectBuilder<T, Mappeable>
 where
     T: Entity,
 {
     fn new() -> Self {
         Self {
-            kind: Selectable,
+            kind: Mappeable,
             condition: None,
             order: Vec::new(),
             limit: None,
@@ -157,9 +157,34 @@ where
         let (sql, params) = self.build_sql();
         Subquery::new(sql, params)
     }
+
+    pub fn count(&self, db: &DatabasePool) -> crate::errors::Result<i64> {
+        db.run_in_connection(|conn| {
+            let res = self.count_in(conn)?;
+            Ok(res)
+        })
+    }
+
+    pub fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
+        let mut sentence = format!("SELECT COUNT(*) FROM {}.{}", T::SCHEMA, T::TABLE_NAME);
+
+        let mut params = Vec::new();
+        if let Some(condition) = &self.condition {
+            sentence.push_str(&format!(" WHERE {}", condition.to_sql()));
+            params = condition.clone().into_params();
+        }
+
+        crate::builders::log_query_start(&sentence, &params);
+        let total: i64 = conn
+            .query_row(&sentence, params_from_iter(params), |row| row.get(0))
+            .map_err(DatabaseError::Select)?;
+        crate::builders::log_query_ending(total as usize, "Counted");
+
+        Ok(total)
+    }
 }
 
-impl<T> SelectBuilder<T, NonSelectable<T>>
+impl<T> SelectBuilder<T, NonMappeable<T>>
 where
     T: Entity,
 {
@@ -175,13 +200,13 @@ where
     }
 }
 
-impl<T> SelectBuilder<T, Selectable>
+impl<T> SelectBuilder<T, Mappeable>
 where
     T: Entity,
 {
-    pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonSelectable<T>> {
+    pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappeable<T>> {
         SelectBuilder {
-            kind: NonSelectable {
+            kind: NonMappeable {
                 columns: fields.to_vec(),
                 distinct: true,
             },
@@ -193,9 +218,9 @@ where
         }
     }
 
-    pub fn columns(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonSelectable<T>> {
+    pub fn columns(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappeable<T>> {
         SelectBuilder {
-            kind: NonSelectable {
+            kind: NonMappeable {
                 columns: fields.to_vec(),
                 distinct: false,
             },
@@ -239,30 +264,5 @@ where
             let res = self.fetch_one_in(conn)?;
             Ok(res)
         })
-    }
-
-    pub fn count(&self, db: &DatabasePool) -> crate::errors::Result<i64> {
-        db.run_in_connection(|conn| {
-            let res = self.count_in(conn)?;
-            Ok(res)
-        })
-    }
-
-    pub fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
-        let mut sentence = format!("SELECT COUNT(*) FROM {}.{}", T::SCHEMA, T::TABLE_NAME);
-
-        let mut params = Vec::new();
-        if let Some(condition) = &self.condition {
-            sentence.push_str(&format!(" WHERE {}", condition.to_sql()));
-            params = condition.clone().into_params();
-        }
-
-        Self::log_query_start(&sentence, &params);
-        let total: i64 = conn
-            .query_row(&sentence, params_from_iter(params), |row| row.get(0))
-            .map_err(DatabaseError::Select)?;
-        Self::log_query_ending(total as usize, "Counted");
-
-        Ok(total)
     }
 }
