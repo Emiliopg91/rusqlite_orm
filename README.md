@@ -141,13 +141,13 @@ let users = Database::run_in_connection(|conn| {
 })?;
 
 // Generated helpers (on the repository) — each has a managed form
-let by_id = UserRepository::select_by_id(1)?;
-let by_email = UserRepository::select_by_email("alice@example.com", None)?;
-let count_by_email = UserRepository::count_by_email("alice@example.com")?;
-let found = UserRepository::exists(1)?;
+let by_id = UserRepository::select_by_id(db, 1)?;
+let by_email = UserRepository::select_by_email(db, "alice@example.com", None)?;
+let count_by_email = UserRepository::count_by_email(db, "alice@example.com")?;
+let found = UserRepository::exists(db, 1)?;
 
 // UPDATE
-user.update_by_id()?; // instance method: updates all non-id columns by id
+user.update_by_id(db)?; // instance method: updates all non-id columns by id
 
 // Or a manual UPDATE builder
 UserRepository::update()
