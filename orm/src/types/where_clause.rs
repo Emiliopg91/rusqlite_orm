@@ -10,7 +10,9 @@ where
     Eq(ColumnName<T>, Value),
     NotEq(ColumnName<T>, Value),
     Gt(ColumnName<T>, Value),
+    Gte(ColumnName<T>, Value),
     Lt(ColumnName<T>, Value),
+    Lte(ColumnName<T>, Value),
     In(ColumnName<T>, Vec<Value>),
     InMultiple(Vec<ColumnName<T>>, Vec<Vec<Value>>),
     Null(ColumnName<T>),
@@ -39,8 +41,14 @@ where
             Self::Gt(col, _) => {
                 format!("{}>?", col)
             }
+            Self::Gte(col, _) => {
+                format!("{}>=?", col)
+            }
             Self::Lt(col, _) => {
                 format!("{}<?", col)
+            }
+            Self::Lte(col, _) => {
+                format!("{}<=?", col)
             }
             Self::In(col, values) => {
                 format!("{} IN ({})", col, vec!["?"; values.len()].join(", "))
@@ -113,7 +121,12 @@ where
 
     pub fn into_params(self) -> Vec<Value> {
         match self {
-            Self::Eq(_, val) | Self::NotEq(_, val) | Self::Gt(_, val) | Self::Lt(_, val) => {
+            Self::Eq(_, val)
+            | Self::NotEq(_, val)
+            | Self::Gt(_, val)
+            | Self::Gte(_, val)
+            | Self::Lt(_, val)
+            | Self::Lte(_, val) => {
                 vec![val]
             }
             Self::In(_, vals) => vals,
@@ -155,7 +168,9 @@ where
             Self::Eq(col, val) => Self::Eq(*col, val.clone()),
             Self::NotEq(col, val) => Self::NotEq(*col, val.clone()),
             Self::Gt(col, val) => Self::Gt(*col, val.clone()),
+            Self::Gte(col, val) => Self::Gte(*col, val.clone()),
             Self::Lt(col, val) => Self::Lt(*col, val.clone()),
+            Self::Lte(col, val) => Self::Lte(*col, val.clone()),
             Self::In(col, vals) => Self::In(*col, vals.clone()),
             Self::InMultiple(cols, vals) => Self::InMultiple(cols.clone(), vals.clone()),
             Self::Null(col) => Self::Null(*col),
