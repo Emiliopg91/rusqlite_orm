@@ -220,7 +220,9 @@ See [`macros/README.md`](../macros/README.md#relationships) for the full attribu
 | `Where::Eq(col, val)`           | `col = ?`                                 |
 | `Where::NotEq(col, val)`        | `col != ?`                                |
 | `Where::Gt(col, val)`           | `col > ?`                                 |
+| `Where::Gte(col, val)`          | `col >= ?`                                |
 | `Where::Lt(col, val)`           | `col < ?`                                 |
+| `Where::Lte(col, val)`          | `col <= ?`                                |
 | `Where::In(col, vals)`          | `col IN (?, ?, ...)`                      |
 | `Where::InMultiple(cols, rows)` | `(col_a, col_b) IN ((?, ?), (?, ?), ...)` |
 | `Where::Null(col)`              | `col IS NULL`                             |
