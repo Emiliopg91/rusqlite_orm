@@ -653,7 +653,7 @@ fn build_entity_trait_impl(
 
     let field_name_list2 = fields.iter().map(|f| {
         let ident = &f.const_ident;
-        quote! { self::entity::columns::#ident }
+        quote! { self::entity::columns::#ident.to_string() }
     });
 
     let get_values_lines2 = fields.iter().map(|f| {
@@ -696,7 +696,7 @@ fn build_entity_trait_impl(
             #[doc = "Get array of names and values from instance"]
             fn get_values_with_field_names(&self) -> Vec<(String, rusqlite_orm::types::value::Value)> {
                 vec![
-                    #(#field_name_list2, #get_values_lines2),*
+                    #((#field_name_list2, #get_values_lines2)),*
                 ]
             }
         }
