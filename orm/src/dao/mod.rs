@@ -16,6 +16,7 @@ pub trait Entity: Sized + 'static {
     type Repository;
 
     fn get_values(&self) -> Vec<Value>;
+    fn get_values_with_field_names(&self) -> Vec<(String, Value)>;
     fn map_from_row(row: &crate::rusqlite::Row) -> Result<Self, crate::rusqlite::Error>;
     fn after_map_from_row() -> crate::errors::Result<()> {
         Ok(())

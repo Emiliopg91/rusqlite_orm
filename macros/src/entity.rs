@@ -650,6 +650,17 @@ fn build_entity_trait_impl(
         let ident = &f.ident;
         quote! { self.#ident.clone().into() }
     });
+
+    let field_name_list2 = fields.iter().map(|f| {
+        let ident = &f.const_ident;
+        quote! { self::entity::columns::#ident }
+    });
+
+    let get_values_lines2 = fields.iter().map(|f| {
+        let ident = &f.ident;
+        quote! { self.#ident.clone().into() }
+    });
+
     let repository = format_ident!("{}Repository", struct_name);
 
     quote! {
@@ -679,6 +690,13 @@ fn build_entity_trait_impl(
             fn get_values(&self) -> Vec<rusqlite_orm::types::value::Value> {
                 vec![
                     #(#get_values_lines),*
+                ]
+            }
+
+            #[doc = "Get array of names and values from instance"]
+            fn get_values_with_field_names(&self) -> Vec<(String, rusqlite_orm::types::value::Value)> {
+                vec![
+                    #(#field_name_list2, #get_values_lines2),*
                 ]
             }
         }
