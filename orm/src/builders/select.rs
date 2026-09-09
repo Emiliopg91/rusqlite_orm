@@ -8,8 +8,8 @@ use crate::{
     dao::Entity,
     errors::DatabaseError,
     types::{
-        column_name::ColumnName, order_by::OrderBy, subquery::Subquery, value::Value,
-        where_clause::Where,
+        column_name::ColumnName, order_by::OrderBy, row::Row, row::Rows, subquery::Subquery,
+        value::Value, where_clause::Where,
     },
 };
 
@@ -118,7 +118,7 @@ where
 
     fn build_sql(&self) -> (String, Vec<Value>) {
         let mut sentence = format!(
-            "SELECT {} FROM {}.{}",
+            "SELECT {} FROM '{}'.'{}'",
             self.kind.columns(),
             T::SCHEMA,
             T::TABLE_NAME
@@ -166,7 +166,7 @@ where
     }
 
     pub fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
-        let mut sentence = format!("SELECT COUNT(*) FROM {}.{}", T::SCHEMA, T::TABLE_NAME);
+        let mut sentence = format!("SELECT COUNT(*) FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
 
         let mut params = Vec::new();
         if let Some(condition) = &self.condition {
@@ -197,6 +197,40 @@ where
     pub fn columns(mut self, fields: &[ColumnName<T>]) -> Self {
         self.kind.columns = fields.to_vec();
         self
+    }
+
+    pub fn fetch_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<Rows> {
+        let (sentence, params) = self.build_sql();
+
+        crate::builders::log_query_start(&sentence, &params);
+        let mut stmt = conn
+            .prepare_cached(&sentence)
+            .map_err(DatabaseError::Select)?;
+        let rows = stmt
+            .query_map(params_from_iter(params.iter()), Row::from_row)
+            .map_err(DatabaseError::Select)?;
+
+        let res: Rows = rows
+            .collect::<Result<Rows, crate::rusqlite::Error>>()
+            .map_err(DatabaseError::Select)?;
+        crate::builders::log_query_ending(res.len(), "Selected");
+
+        Ok(res)
+    }
+
+    pub fn fetch_one_in(
+        &self,
+        conn: &crate::rusqlite::Connection,
+    ) -> crate::errors::Result<Option<Row>> {
+        let res = self.fetch_in(conn)?;
+        Ok(res.into_iter().next())
+    }
+
+    pub fn fetch_one(&self, db: &DatabasePool) -> crate::errors::Result<Option<Row>> {
+        db.run_in_connection(|conn| {
+            let res = self.fetch_one_in(conn)?;
+            Ok(res)
+        })
     }
 }
 
