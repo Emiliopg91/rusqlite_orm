@@ -6,3 +6,4 @@ pub mod table_name;
 pub mod value;
 pub mod where_clause;
 pub mod value_or_function;
+pub mod function;

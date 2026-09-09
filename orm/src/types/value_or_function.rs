@@ -1,16 +1,9 @@
-use std::fmt::Display;
-
-use crate::types::value::Value;
+use crate::types::{function::Function, value::Value};
 
 #[derive(Clone)]
 pub enum ValueOrFunction {
     Value(Value),
     Function(Function),
-}
-
-#[derive(Clone)]
-pub enum Function {
-    Date(Vec<String>),
 }
 
 impl ValueOrFunction {
@@ -22,20 +15,9 @@ impl ValueOrFunction {
     }
 }
 
-impl Display for Function {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                Function::Date(items) => {
-                    let mut date_string = "'".to_string();
-                    date_string.push_str(&items.join("','"));
-                    date_string.push('\'');
-                    format!("date({})", date_string)
-                }
-            }
-        )
+impl From<Function> for ValueOrFunction {
+    fn from(value: Function) -> Self {
+        ValueOrFunction::Function(value)
     }
 }
 
