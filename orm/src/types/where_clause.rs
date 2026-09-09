@@ -1,3 +1,4 @@
+use crate::types::value_or_function::ValueOrFunction;
 use crate::{dao::Entity, types::value::Value};
 
 use super::column_name::ColumnName;
@@ -7,10 +8,10 @@ pub enum Where<T>
 where
     T: Entity,
 {
-    Eq(ColumnName<T>, Value),
-    NotEq(ColumnName<T>, Value),
-    Gt(ColumnName<T>, Value),
-    Lt(ColumnName<T>, Value),
+    Eq(ColumnName<T>, ValueOrFunction),
+    NotEq(ColumnName<T>, ValueOrFunction),
+    Gt(ColumnName<T>, ValueOrFunction),
+    Lt(ColumnName<T>, ValueOrFunction),
     In(ColumnName<T>, Vec<Value>),
     InMultiple(Vec<ColumnName<T>>, Vec<Vec<Value>>),
     Null(ColumnName<T>),
@@ -30,6 +31,18 @@ where
 {
     pub fn to_sql(&self) -> String {
         match self {
+            Self::Eq(col, ValueOrFunction::Function(f)) => {
+                format!("{}={}", col, f)
+            }
+            Self::NotEq(col, ValueOrFunction::Function(f)) => {
+                format!("{}!={}", col, f)
+            }
+            Self::Gt(col, ValueOrFunction::Function(f)) => {
+                format!("{}>{}", col, f)
+            }
+            Self::Lt(col, ValueOrFunction::Function(f)) => {
+                format!("{}<{}", col, f)
+            }
             Self::Eq(col, _) => {
                 format!("{}=?", col)
             }
@@ -115,6 +128,9 @@ where
         match self {
             Self::Eq(_, val) | Self::NotEq(_, val) | Self::Gt(_, val) | Self::Lt(_, val) => {
                 vec![val]
+                    .into_iter()
+                    .flat_map(|f| f.value_or_none())
+                    .collect::<Vec<Value>>()
             }
             Self::In(_, vals) => vals,
             Self::InMultiple(_, vals_arr) => {
