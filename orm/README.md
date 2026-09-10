@@ -9,7 +9,7 @@ The runtime crate of the [`rusqlite_orm`](../README.md) workspace: a lightweight
 - **Derive-based entities** — annotate a struct with `#[derive(Entity)]` and get table metadata, row-to-struct mapping, and column constants for free.
 - **A generated `Repository`** — every `#[derive(Entity)]` struct gets a companion `<Struct>Repository` unit struct implementing `rusqlite_orm::dao::Repository<Struct>`, which is where the query builders and generated lookups (`select_by_id`, `exists`, index helpers, ...) live.
 - **Typed query builders** — `select()`, `insert()`, `update()`, `delete()` builders with a fluent API, called on the generated `<Struct>Repository`.
-- **Rich `WHERE` clauses** — `Eq`, `NotEq`, `Gt`, `Gte`, `Lt`, `Lte`, `In`, `InMultiple` (tuple `IN`), `Null`, `NotNull`, combinable with `And` / `Or`, plus subquery variants (`EqSub`, `NotEqSub`, `InSub`, `NotInSub`, `InMultipleSub`) that embed another `SelectBuilder` (via `.to_subquery()`) inside the condition.
+- **Rich `WHERE` clauses** — `Eq`, `NotEq`, `Gt`, `Gte`, `Lt`, `Lte`, `In`, `InMultiple` (tuple `IN`), `Null`, `NotNull`, combinable with `And` / `Or`, plus subquery variants (`EqSub`, `NotEqSub`, `InSub`, `NotInSub`, `InMultipleSub`) that embed another `SelectBuilder` (via `.to_subquery()`) inside the condition. Any comparison value can also be `Value::Raw(sql)` to splice a SQL expression (e.g. a SQLite function call like `CURRENT_TIMESTAMP`) in place of a bound parameter.
 - **Ordering, limits & pagination** — `OrderBy::Asc` / `OrderBy::Desc`, `.limit(n)` and `.offset(n)`.
 - **Raw / non-mapped selects** — calling `.columns(&[...])` or `.distinct(&[...])` on `select()` switches it from returning `Vec<Entity>` to returning `Row`/`Rows` (a simple column-name → `Value` map), for projections that don't need to cover every persisted column.
 - **Generated convenience methods** for entities with a struct-level `#[primary_key(field_a, field_b, ...)]` attribute:
@@ -23,7 +23,7 @@ The runtime crate of the [`rusqlite_orm`](../README.md) workspace: a lightweight
 - **Columns excluded from `INSERT` only** with `#[default]` — the field stays in `SELECT`/`FIELDS`, but is left out of the generated `INSERT` statement so SQLite applies its own column default.
 - **Autoincrement primary keys** — `#[autoincrement]` (implies `#[default]`) on a single `i64` field gets the generated `rowid` written back into that field after each insert.
 - **Multiple SQLite schemas** — `#[entity(schema = "...")]` attaches an entity to a schema other than `"main"` (e.g. an `ATTACH`ed database); every generated statement is qualified as `<schema>.<table>`.
-- **Wide column type support** — the `Value` enum (`rusqlite_orm::types::value::Value`) covers every signed/unsigned integer width (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`), `f32`/`f64`, `bool`, `String`, `Vec<u8>` (BLOB, hex-encoded when logged) and `Option<T>` (mapped to `NULL`/the inner value).
+- **Wide column type support** — the `Value` enum (`rusqlite_orm::types::value::Value`) covers every signed/unsigned integer width (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`), `f32`/`f64`, `bool`, `String`, `Vec<u8>` (BLOB, hex-encoded when logged) and `Option<T>` (mapped to `NULL`/the inner value), plus a `Value::Raw(String)` variant for SQL literals/function calls that must not be bound as a parameter (see the `WHERE` clause reference below).
 - **Configurable pooled connections** — `DatabaseConnectionBuilder` is a typestate builder: it starts in an in-memory state (single connection, `PRAGMA journal_mode = MEMORY`), and calling `.location(path)` switches it to a file-backed state with its own defaults (pool of 5, `PRAGMA journal_mode = DELETE`). Pool size, min idle connections, connection/busy timeouts, journal mode and `PRAGMA foreign_keys` are all configurable before calling `.build(name)`, which opens an [`r2d2`](https://crates.io/crates/r2d2)-backed pool (via `r2d2_sqlite`) and hands you back an owned `DatabasePool` — there is no global singleton, so you're free to build more than one.
 - **Two ways to run statements** — `DatabasePool::run_in_connection(...)` borrows a pooled connection for one or more statements (not atomic across calls unless you wrap them yourself), and `DatabasePool::run_in_transaction(...)` runs the closure inside a single `rusqlite::Transaction`. Every query builder and generated helper exposes both a "managed" method (`execute`, `fetch_one`, ...) that takes `&DatabasePool` and opens its own pooled connection/transaction, and a connection-taking counterpart for composing multiple statements: the read side (`fetch_in`, `fetch_one_in`, `count_in`, and the primary-key/index `select_*`/`exists*`/`count_*` helpers) takes a `&rusqlite::Connection`, while the write side (`execute_in`, and the generated `update_by_id_in`/`delete_by_id_in`) takes a `&rusqlite::Transaction`, since `Transaction` derefs to `Connection` but not the other way around.
 - **Cached prepared statements** — `SELECT` statements are prepared via `Connection::prepare_cached`, so repeated queries with the same shape reuse the cached statement.
@@ -256,7 +256,18 @@ See [`macros/README.md`](../macros/README.md#relationships) for the full attribu
 | `Where::And(conditions)`        | `(...) AND (...)`                         |
 | `Where::Or(conditions)`         | `(...) OR (...)`                          |
 
-A `sub` is a `rusqlite_orm::types::subquery::Subquery`, obtained by calling `.to_subquery()` on a `SelectBuilder` (built with `.columns(&[single_col])` so it renders as a single-column `SELECT`); its SQL and bound parameters are spliced verbatim into the outer statement, so it composes with any `where_`/`order_by`/`limit`/`offset` you added to the inner builder.
+A `sub` is a `rusqlite_orm::types::subquery::Subquery`, obtained by calling `.to_subquery()` on a `SelectBuilder` (built with `.columns(&[single_col])` so it renders as a single-column `SELECT`), or by calling `Subquery::raw(sql)` for a fragment with no bound parameters; its SQL and bound parameters are spliced verbatim into the outer statement, so it composes with any `where_`/`order_by`/`limit`/`offset` you added to the inner builder.
+
+In `Eq`/`NotEq`/`Gt`/`Gte`/`Lt`/`Lte`/`In`, `val`/`vals` normally bind as `?` parameters, but a `Value::Raw(sql)` is spliced into the statement text instead and skipped when collecting bound parameters — useful for comparing a column against a SQLite function call:
+
+```rust
+use rusqlite_orm::types::value::Value;
+
+// expires_at < CURRENT_TIMESTAMP   (no bound parameter for the right-hand side)
+Where::Lt(entity::columns::EXPIRES_AT, Value::Raw("CURRENT_TIMESTAMP".into()));
+```
+
+Since the string is spliced verbatim and unescaped, only build `Value::Raw` from trusted/static SQL — never from unsanitized user input.
 
 ## Error handling
 
