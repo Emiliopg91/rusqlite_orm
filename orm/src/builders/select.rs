@@ -13,6 +13,7 @@ use crate::{
     },
 };
 
+#[derive(Clone, Copy)]
 pub struct Mappeable;
 
 pub struct NonMappeable<T>
@@ -21,6 +22,18 @@ where
 {
     columns: Vec<ColumnName<T>>,
     distinct: bool,
+}
+
+impl<T> Clone for NonMappeable<T>
+where
+    T: Entity,
+{
+    fn clone(&self) -> Self {
+        Self {
+            columns: self.columns.clone(),
+            distinct: self.distinct,
+        }
+    }
 }
 
 pub trait ColumnsOf<T>
@@ -73,6 +86,23 @@ where
     limit: Option<u32>,
     offset: Option<u32>,
     _marker_entity: PhantomData<T>,
+}
+
+impl<T, K> Clone for SelectBuilder<T, K>
+where
+    T: Entity,
+    K: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            condition: self.condition.clone(),
+            order: self.order.clone(),
+            limit: self.limit,
+            offset: self.offset,
+            _marker_entity: PhantomData,
+        }
+    }
 }
 
 impl<T> QueryBuilder<T> for SelectBuilder<T, Mappeable>
@@ -222,7 +252,8 @@ where
         &self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::errors::Result<Option<Row>> {
-        let res = self.fetch_in(conn)?;
+        let query = self.clone().limit(1);
+        let res = query.fetch_in(conn)?;
         Ok(res.into_iter().next())
     }
 
@@ -289,7 +320,8 @@ where
         &self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::errors::Result<Option<T>> {
-        let res = self.fetch_in(conn)?;
+        let query = self.clone().limit(1);
+        let res = query.fetch_in(conn)?;
         Ok(res.into_iter().next())
     }
 
