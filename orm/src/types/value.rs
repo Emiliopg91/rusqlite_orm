@@ -33,6 +33,10 @@ pub enum Value {
     Text(String),
     Blob(Vec<u8>),
     Null,
+    /// SQL literal (typically a SQLite function call, e.g. `CURRENT_TIMESTAMP`) that
+    /// `Where::to_sql` splices directly into the statement text instead of a `?`
+    /// placeholder. Must never reach `Where::into_params`/`ToSql` as a bound parameter.
+    Raw(String),
 }
 
 impl Value {
@@ -62,6 +66,7 @@ impl Value {
                 s
             }
             Value::Null => "NULL".to_string(),
+            Value::Raw(v) => v.clone(),
         }
     }
 }
@@ -87,6 +92,7 @@ impl ToSql for Value {
             Value::Text(v) => ToSqlOutput::from(v.clone()),
             Value::Blob(v) => ToSqlOutput::Borrowed(ValueRef::Blob(v)),
             Value::Null => ToSqlOutput::from(Null),
+            Value::Raw(v) => ToSqlOutput::from(v.clone()),
         })
     }
 }

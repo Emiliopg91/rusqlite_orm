@@ -26,32 +26,44 @@ where
     Or(Vec<Where<T>>),
 }
 
+fn value_token(val: &Value) -> String {
+    match val {
+        Value::Raw(sql) => sql.clone(),
+        _ => "?".to_string(),
+    }
+}
+
 impl<T> Where<T>
 where
     T: Entity,
 {
     pub fn to_sql(&self) -> String {
         match self {
-            Self::Eq(col, _) => {
-                format!("{}=?", col)
+            Self::Eq(col, val) => {
+                format!("{}={}", col, value_token(val))
             }
-            Self::NotEq(col, _) => {
-                format!("{}!=?", col)
+            Self::NotEq(col, val) => {
+                format!("{}!={}", col, value_token(val))
             }
-            Self::Gt(col, _) => {
-                format!("{}>?", col)
+            Self::Gt(col, val) => {
+                format!("{}>{}", col, value_token(val))
             }
-            Self::Gte(col, _) => {
-                format!("{}>=?", col)
+            Self::Gte(col, val) => {
+                format!("{}>={}", col, value_token(val))
             }
-            Self::Lt(col, _) => {
-                format!("{}<?", col)
+            Self::Lt(col, val) => {
+                format!("{}<{}", col, value_token(val))
             }
-            Self::Lte(col, _) => {
-                format!("{}<=?", col)
+            Self::Lte(col, val) => {
+                format!("{}<={}", col, value_token(val))
             }
             Self::In(col, values) => {
-                format!("{} IN ({})", col, vec!["?"; values.len()].join(", "))
+                let tokens = values
+                    .iter()
+                    .map(value_token)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{} IN ({})", col, tokens)
             }
             Self::InMultiple(cols, values) => {
                 let col_list = cols
@@ -126,15 +138,21 @@ where
             | Self::Gt(_, val)
             | Self::Gte(_, val)
             | Self::Lt(_, val)
-            | Self::Lte(_, val) => {
-                vec![val]
-            }
-            Self::In(_, vals) => vals,
+            | Self::Lte(_, val) => match val {
+                Value::Raw(_) => vec![],
+                _ => vec![val],
+            },
+            Self::In(_, vals) => vals
+                .into_iter()
+                .filter(|val| !matches!(val, Value::Raw(_)))
+                .collect(),
             Self::InMultiple(_, vals_arr) => {
                 let mut params = vec![];
                 for vals in vals_arr {
                     for val in vals {
-                        params.push(val)
+                        if !matches!(val, Value::Raw(_)) {
+                            params.push(val)
+                        }
                     }
                 }
 

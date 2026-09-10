@@ -12,4 +12,12 @@ impl Subquery {
     pub fn new(sql: String, params: Vec<Value>) -> Self {
         Self { sql, params }
     }
+
+    /// Convenience constructor for a raw SQL fragment with no bound parameters.
+    pub fn raw(sql: impl Into<String>) -> Self {
+        Self {
+            sql: sql.into(),
+            params: vec![],
+        }
+    }
 }
