@@ -1,5 +1,6 @@
 pub mod column_name;
 pub mod order_by;
+pub mod row;
 pub mod schema;
 pub mod subquery;
 pub mod table_name;

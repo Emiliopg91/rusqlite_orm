@@ -8,14 +8,14 @@ use crate::{
     dao::Entity,
     errors::DatabaseError,
     types::{
-        column_name::ColumnName, order_by::OrderBy, subquery::Subquery, value::Value,
-        where_clause::Where,
+        column_name::ColumnName, order_by::OrderBy, row::Row, row::Rows, subquery::Subquery,
+        value::Value, where_clause::Where,
     },
 };
 
-pub struct Selectable;
+pub struct Mappeable;
 
-pub struct NonSelectable<T>
+pub struct NonMappeable<T>
 where
     T: Entity,
 {
@@ -30,7 +30,7 @@ where
     fn columns(&self) -> String;
 }
 
-impl<T> ColumnsOf<T> for Selectable
+impl<T> ColumnsOf<T> for Mappeable
 where
     T: Entity,
 {
@@ -43,7 +43,7 @@ where
     }
 }
 
-impl<T> ColumnsOf<T> for NonSelectable<T>
+impl<T> ColumnsOf<T> for NonMappeable<T>
 where
     T: Entity,
 {
@@ -63,7 +63,7 @@ where
     }
 }
 
-pub struct SelectBuilder<T, K = Selectable>
+pub struct SelectBuilder<T, K = Mappeable>
 where
     T: Entity,
 {
@@ -75,13 +75,13 @@ where
     _marker_entity: PhantomData<T>,
 }
 
-impl<T> QueryBuilder<T> for SelectBuilder<T, Selectable>
+impl<T> QueryBuilder<T> for SelectBuilder<T, Mappeable>
 where
     T: Entity,
 {
     fn new() -> Self {
         Self {
-            kind: Selectable,
+            kind: Mappeable,
             condition: None,
             order: Vec::new(),
             limit: None,
@@ -118,7 +118,7 @@ where
 
     fn build_sql(&self) -> (String, Vec<Value>) {
         let mut sentence = format!(
-            "SELECT {} FROM {}.{}",
+            "SELECT {} FROM '{}'.'{}'",
             self.kind.columns(),
             T::SCHEMA,
             T::TABLE_NAME
@@ -157,9 +157,34 @@ where
         let (sql, params) = self.build_sql();
         Subquery::new(sql, params)
     }
+
+    pub fn count(&self, db: &DatabasePool) -> crate::errors::Result<i64> {
+        db.run_in_connection(|conn| {
+            let res = self.count_in(conn)?;
+            Ok(res)
+        })
+    }
+
+    pub fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
+        let mut sentence = format!("SELECT COUNT(*) FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
+
+        let mut params = Vec::new();
+        if let Some(condition) = &self.condition {
+            sentence.push_str(&format!(" WHERE {}", condition.to_sql()));
+            params = condition.clone().into_params();
+        }
+
+        crate::builders::log_query_start(&sentence, &params);
+        let total: i64 = conn
+            .query_row(&sentence, params_from_iter(params), |row| row.get(0))
+            .map_err(DatabaseError::Select)?;
+        crate::builders::log_query_ending(total as usize, "Counted");
+
+        Ok(total)
+    }
 }
 
-impl<T> SelectBuilder<T, NonSelectable<T>>
+impl<T> SelectBuilder<T, NonMappeable<T>>
 where
     T: Entity,
 {
@@ -173,15 +198,49 @@ where
         self.kind.columns = fields.to_vec();
         self
     }
+
+    pub fn fetch_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<Rows> {
+        let (sentence, params) = self.build_sql();
+
+        crate::builders::log_query_start(&sentence, &params);
+        let mut stmt = conn
+            .prepare_cached(&sentence)
+            .map_err(DatabaseError::Select)?;
+        let rows = stmt
+            .query_map(params_from_iter(params.iter()), Row::from_row)
+            .map_err(DatabaseError::Select)?;
+
+        let res: Rows = rows
+            .collect::<Result<Rows, crate::rusqlite::Error>>()
+            .map_err(DatabaseError::Select)?;
+        crate::builders::log_query_ending(res.len(), "Selected");
+
+        Ok(res)
+    }
+
+    pub fn fetch_one_in(
+        &self,
+        conn: &crate::rusqlite::Connection,
+    ) -> crate::errors::Result<Option<Row>> {
+        let res = self.fetch_in(conn)?;
+        Ok(res.into_iter().next())
+    }
+
+    pub fn fetch_one(&self, db: &DatabasePool) -> crate::errors::Result<Option<Row>> {
+        db.run_in_connection(|conn| {
+            let res = self.fetch_one_in(conn)?;
+            Ok(res)
+        })
+    }
 }
 
-impl<T> SelectBuilder<T, Selectable>
+impl<T> SelectBuilder<T, Mappeable>
 where
     T: Entity,
 {
-    pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonSelectable<T>> {
+    pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappeable<T>> {
         SelectBuilder {
-            kind: NonSelectable {
+            kind: NonMappeable {
                 columns: fields.to_vec(),
                 distinct: true,
             },
@@ -193,9 +252,9 @@ where
         }
     }
 
-    pub fn columns(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonSelectable<T>> {
+    pub fn columns(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappeable<T>> {
         SelectBuilder {
-            kind: NonSelectable {
+            kind: NonMappeable {
                 columns: fields.to_vec(),
                 distinct: false,
             },
@@ -239,30 +298,5 @@ where
             let res = self.fetch_one_in(conn)?;
             Ok(res)
         })
-    }
-
-    pub fn count(&self, db: &DatabasePool) -> crate::errors::Result<i64> {
-        db.run_in_connection(|conn| {
-            let res = self.count_in(conn)?;
-            Ok(res)
-        })
-    }
-
-    pub fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
-        let mut sentence = format!("SELECT COUNT(*) FROM {}.{}", T::SCHEMA, T::TABLE_NAME);
-
-        let mut params = Vec::new();
-        if let Some(condition) = &self.condition {
-            sentence.push_str(&format!(" WHERE {}", condition.to_sql()));
-            params = condition.clone().into_params();
-        }
-
-        Self::log_query_start(&sentence, &params);
-        let total: i64 = conn
-            .query_row(&sentence, params_from_iter(params), |row| row.get(0))
-            .map_err(DatabaseError::Select)?;
-        Self::log_query_ending(total as usize, "Counted");
-
-        Ok(total)
     }
 }

@@ -3,6 +3,18 @@ use crate::rusqlite::{
     types::{Null, ToSqlOutput, ValueRef},
 };
 
+impl From<ValueRef<'_>> for Value {
+    fn from(v: ValueRef<'_>) -> Self {
+        match v {
+            ValueRef::Null => Value::Null,
+            ValueRef::Integer(i) => Value::Int64(i),
+            ValueRef::Real(f) => Value::Float64(f),
+            ValueRef::Text(t) => Value::Text(String::from_utf8_lossy(t).into_owned()),
+            ValueRef::Blob(b) => Value::Blob(b.to_vec()),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub enum Value {
     IntSize(isize),

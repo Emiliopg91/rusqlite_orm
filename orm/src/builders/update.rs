@@ -52,7 +52,7 @@ where
     }
 
     pub fn execute_in(&self, tx: &crate::rusqlite::Transaction) -> crate::errors::Result<usize> {
-        let mut sentence = format!("UPDATE {}.{} SET ", T::SCHEMA, T::TABLE_NAME);
+        let mut sentence = format!("UPDATE '{}'.'{}' SET ", T::SCHEMA, T::TABLE_NAME);
         sentence.push_str(
             &self
                 .field_values

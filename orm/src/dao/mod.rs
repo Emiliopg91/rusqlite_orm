@@ -12,14 +12,17 @@ pub trait Entity: Sized + 'static {
     const SCHEMA: &'static Schema<Self>;
     const TABLE_NAME: &'static TableName<Self>;
     const FIELDS: &'static [ColumnName<Self>];
+    const INSERT_FIELDS: &'static [ColumnName<Self>];
+    const AUTOINCREMENT_FIELD: bool;
 
     type Repository;
 
-    fn get_values(&self) -> Vec<Value>;
+    fn get_insert_values(&self) -> Vec<Value>;
     fn map_from_row(row: &crate::rusqlite::Row) -> Result<Self, crate::rusqlite::Error>;
     fn after_map_from_row() -> crate::errors::Result<()> {
         Ok(())
     }
+    fn set_autoincrement_id(&mut self, _: i64) {}
 }
 
 pub trait Repository<T>: Sized + 'static
@@ -30,7 +33,7 @@ where
         DeleteBuilder::new()
     }
 
-    fn insert() -> InsertBuilder<T> {
+    fn insert() -> InsertBuilder<'static, T> {
         InsertBuilder::new()
     }
 

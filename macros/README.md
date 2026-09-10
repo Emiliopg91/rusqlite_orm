@@ -32,31 +32,33 @@ pub struct User {
 | `#[entity(schema = "...")]`           | Overrides the SQL schema name (defaults to `"main"`). Useful when the entity lives in an `ATTACH`ed database; every generated statement is qualified as `<schema>.<table>`. |
 | `#[entity(comparable = true)]`        | Derives `PartialEq`/`Eq` comparing only the `#[primary_key(...)]` field(s). Requires a `#[primary_key(...)]` attribute.                                    |
 | `#[entity(hashable = true)]`          | Derives `Hash` based only on the `#[primary_key(...)]` field(s). Requires a `#[primary_key(...)]` attribute.                                               |
-| `#[primary_key(field_a, field_b, ...)]` | Struct-level attribute marking the listed fields as the primary key. Gets you, on the repository, `select_by_id`/`exists`, and on the entity instance, `update_by_id`/`delete_by_id` (each with an `_in_conn` variant). Multiple fields are combined with `AND`. Referencing a field that doesn't exist on the struct is a compile error. |
-| `#[index("name", (col_a, col_b))]`    | Generates `select_by_name(..., order_by)` (and `_in_conn`/`count_by_name`/`count_by_name_in_conn` variants) for the given column group. Can be repeated for multiple indexes. Returns `Vec<Self>`. |
-| `#[unique("name", (col_d, col_e))]`   | Same syntax as `#[index(...)]`, but for a column group that is unique. Generates `select_by_name(...)` (and `_in_conn`/`exists_by_name`/`exists_by_name_in_conn` variants) returning `Option<Self>` instead of `Vec<Self>`, and without an `order_by` parameter (see [Indexes and unique indexes](#indexes-and-unique-indexes) below). |
+| `#[primary_key(field_a, field_b, ...)]` | Struct-level attribute marking the listed fields as the primary key. Gets you, on the repository, `select_by_id`/`exists` (each with an `_in` variant), and on the entity instance, `update_by_id`/`delete_by_id` (each with an `_in` variant taking a `&rusqlite::Transaction`). Multiple fields are combined with `AND`. Referencing a field that doesn't exist on the struct is a compile error. |
+| `#[index("name", (col_a, col_b))]`    | Generates `select_by_name(db, ..., order_by)` (and `_in_conn`/`count_by_name`/`count_by_name_in_conn` variants) for the given column group. Can be repeated for multiple indexes. Returns `Vec<Self>`. |
+| `#[unique("name", (col_d, col_e))]`   | Same syntax as `#[index(...)]`, but for a column group that is unique. Generates `select_by_name(db, ...)` (and `_in_conn`/`exists_by_name`/`exists_by_name_in_conn` variants) returning `Option<Self>` instead of `Vec<Self>`, and without an `order_by` parameter (see [Indexes and unique indexes](#indexes-and-unique-indexes) below). |
 
 **Field-level attributes**
 
 | Attribute                                            | Effect                                                                                                                                                                                                                                             |
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `#[column("...")]`                                   | Overrides the column name (defaults to the field name, lowercased).                                                                                                                                                                                |
+| `#[column("...")]`                                   | Overrides the SQL column name (defaults to the field name, lowercased). Only the SQL name changes — the generated `entity::columns::*` constant is still named after the Rust field, not this override.                                          |
 | `#[transient]`                                       | Excludes the field from `INSERT`/`SELECT` column lists entirely. When mapping a row back into the struct, this field is filled in via `Default::default()` — the struct must implement `Default`.                                                  |
+| `#[default]`                                         | Excludes the field from the generated `INSERT` column list only — it's still part of `SELECT`/`FIELDS`. Use it for a column with a SQL-level `DEFAULT` you want SQLite to apply instead of sending a value from Rust (see [Default and autoincrement columns](#default-and-autoincrement-columns) below). |
+| `#[autoincrement]`                                   | Implies `#[default]`, and additionally marks this field as the one that receives the SQLite-assigned `rowid` after each insert. Only one field per struct may carry this attribute, and it must be typed `i64` — both are compile errors otherwise (see [Default and autoincrement columns](#default-and-autoincrement-columns) below). |
 | `#[relationship((local_field, remote_column), ...)]` | Declares the field as a related entity rather than a persisted column (see [Relationships](#relationships) below).                                                                                                                                 |
 
-Every persisted field's type must implement `Into<rusqlite_orm::dao::helpers::types::value::Value>` — this covers all integer widths (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`), `f32`/`f64`, `bool`, `String`, `Vec<u8>` (mapped to a BLOB column) and `Option<T>` for any of the above (mapped to `NULL` when absent).
+Every persisted field's type must implement `Into<rusqlite_orm::types::value::Value>` — this covers all integer widths (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`), `f32`/`f64`, `bool`, `String`, `Vec<u8>` (mapped to a BLOB column) and `Option<T>` for any of the above (mapped to `NULL` when absent).
 
 **Generated code**
 
-- `mod entity { pub mod columns { ... } }` — a typed `ColumnName<Self>` constant for every persisted field, named after the field in upper case (e.g. `entity::columns::EMAIL_ADDRESS`), plus `entity::TABLE` and `entity::SCHEMA`.
-- An `impl rusqlite_orm::dao::Entity for YourStruct` providing `SCHEMA`, `TABLE_NAME`, `FIELDS`, `map_from_row`, and `get_values`.
+- `mod entity { pub mod columns { ... } }` — a typed `ColumnName<Self>` constant for every persisted field, named after the **field** in upper case (e.g. field `email` → `entity::columns::EMAIL`) — note that this is the field's own name, not its `#[column("...")]` override, so a field named `email` with `#[column("email_address")]` still gets `entity::columns::EMAIL`, not `entity::columns::EMAIL_ADDRESS` — plus `entity::TABLE` and `entity::SCHEMA`.
+- An `impl rusqlite_orm::dao::Entity for YourStruct` providing `SCHEMA`, `TABLE_NAME`, `FIELDS`, `INSERT_FIELDS`, `AUTOINCREMENT_FIELD`, `map_from_row`, `get_insert_values`, and `set_autoincrement_id`.
 - A `YourStructRepository` struct implementing `rusqlite_orm::dao::Repository<YourStruct>`.
-- `exists` / `select_by_id` / `update_by_id` / `delete_by_id` (+ `_in_conn`) when the struct has a `#[primary_key(...)]` attribute.
-- `select_by_<name>` / `count_by_<name>` (or `exists_by_<name>` for `#[unique(...)]`) (+ `_in_conn`) for every index declared with `#[index(...)]` or `#[unique(...)]`.
+- `exists(db, ...)` / `select_by_id(db, ...)` (+ `_in`) and, as instance methods, `update_by_id(db)` / `delete_by_id(db)` (+ `_in`) when the struct has a `#[primary_key(...)]` attribute.
+- `select_by_<name>(db, ...)` / `count_by_<name>(db, ...)` (or `exists_by_<name>(db, ...)` for `#[unique(...)]`) (+ `_in_conn`) for every index declared with `#[index(...)]` or `#[unique(...)]`.
 - `PartialEq`/`Eq` and/or `Hash` impls when `comparable`/`hashable` are enabled.
-- `fetch_<field>_relationship` / `fetch_<field>_relationship_in_conn` for every field annotated with `#[relationship(...)]`.
+- `fetch_<field>_relationship(db)` / `fetch_<field>_relationship_in_conn(conn)` for every field annotated with `#[relationship(...)]`.
 
-Every generated function comes in two forms: a **managed** one (e.g. `select_by_id(id)`) that opens its own pooled connection via `rusqlite_orm::database::Database::run_in_connection`, and an **`_in_conn`** one (e.g. `select_by_id_in_conn(conn, id)`) that takes an explicit `conn: &rusqlite_orm::rusqlite::Connection` as its first parameter — pass a `&mut rusqlite::Transaction` here to compose several calls atomically, since `Transaction` derefs to `Connection`.
+Every generated function comes in two forms: a **managed** one (e.g. `select_by_id(db, id)`) that takes `db: &rusqlite_orm::database::DatabasePool` and opens its own pooled connection or transaction internally, and a connection-taking one for composing several calls atomically. The suffix for that second form isn't fully uniform across the crate: primary-key helpers (`exists_in`, `select_by_id_in`, and the instance methods `update_by_id_in`/`delete_by_id_in`) use plain `_in` and take a `conn: &rusqlite_orm::rusqlite::Connection` (the primary-key instance methods specifically need a `&rusqlite_orm::rusqlite::Transaction`, since they go through `UpdateBuilder`/`DeleteBuilder`), while index/unique/relationship helpers (`select_by_id_in_conn`, `count_by_name_in_conn`, `fetch_<field>_relationship_in_conn`, ...) use `_in_conn` and take a `conn: &rusqlite_orm::rusqlite::Connection`. Pass a `&mut rusqlite::Transaction` anywhere a `&rusqlite::Connection` is expected — it reborrows, since `Transaction` derefs to `Connection`.
 
 Index/primary-key parameter types mirror the field types, with two exceptions to avoid unnecessary cloning: a `String` field becomes a `&str` parameter, and a `Vec<u8>` field becomes a `&[u8]` parameter.
 
@@ -96,18 +98,53 @@ Each attribute takes:
 | Return type | `Vec<Self>` | `Option<Self>` |
 | `order_by` parameter | Yes | No — a unique index can match at most one row, so ordering is meaningless |
 | Count/exists function | `count_by_<name>` -> `i64` | `exists_by_<name>` -> `bool` |
-| Fetch method used internally | `fetch_in_conn` | `fetch_one_in_conn` |
+| Fetch method used internally | `fetch_in` | `fetch_one_in` |
 
 For `#[unique("tenant_username", (tenant_id, username))]`, the macro generates on the repository impl:
 
-- `select_by_tenant_username(tenant_id, username) -> Result<Option<Self>>`
+- `select_by_tenant_username(db, tenant_id, username) -> Result<Option<Self>>`
 - `select_by_tenant_username_in_conn(conn, tenant_id, username) -> Result<Option<Self>>`
-- `exists_by_tenant_username(tenant_id, username) -> Result<bool>`
+- `exists_by_tenant_username(db, tenant_id, username) -> Result<bool>`
 - `exists_by_tenant_username_in_conn(conn, tenant_id, username) -> Result<bool>`
 
-For `#[index("last_name", (last_name))]`, the equivalent non-unique set is generated with an extra `order_by` parameter and `count_by_last_name(...)`/`count_by_last_name_in_conn(...)` returning `i64` instead of `exists_by_*`/`bool`.
+For `#[index("last_name", (last_name))]`, the equivalent non-unique set is generated with an extra `order_by` parameter and `count_by_last_name(db, ...)`/`count_by_last_name_in_conn(conn, ...)` returning `i64` instead of `exists_by_*`/`bool`.
 
 The `#[unique(...)]` attribute only generates lookup functions based on the assumption that the column group is unique; it does **not** create a `UNIQUE` constraint in the database schema itself — that still has to be declared in your DDL (see [`dlls!(path)`](#dllspath) below).
+
+## Default and autoincrement columns
+
+```rust
+#[derive(Entity, Debug, Clone, Default)]
+#[entity(table = "users")]
+#[primary_key(id)]
+pub struct User {
+    #[autoincrement]
+    pub id: i64,
+    pub email: String,
+    #[default]
+    pub created_at: i64,
+}
+```
+
+- `#[default]` removes a field from the generated `INSERT` column list — the statement omits the column entirely, so SQLite falls back to whatever `DEFAULT` (or `NULL`) is declared for it in your DDL. The field is still part of `FIELDS`/`SELECT` and mapped back normally by `map_from_row`.
+- `#[autoincrement]` implies `#[default]` (it's also skipped on `INSERT`) and additionally:
+  - sets `Entity::AUTOINCREMENT_FIELD` to `true` for the struct,
+  - generates an `Entity::set_autoincrement_id(&mut self, id: i64)` that assigns the field,
+  - is only valid on an `i64` field — a compile error is raised otherwise,
+  - can only be used once per struct — a second `#[autoincrement]` field is a compile error.
+- Fields without either attribute are still part of `INSERT` (the pre-existing behavior) and are collected into `Entity::INSERT_FIELDS`; `get_insert_values()` returns values for exactly those fields, in the same order.
+
+**Effect on `InsertBuilder`**
+
+Because inserting a row with an autoincrement field needs to read back SQLite's `last_insert_rowid()` and write it into the struct, `InsertBuilder::item(...)` takes `&'a mut T` rather than an owned `T`, and `execute`/`execute_in` take `&mut self`:
+
+```rust
+let mut user = User { id: 0, email: "alice@example.com".into(), created_at: 0 };
+UserRepository::insert().item(&mut user).execute(&db)?;
+// user.id now holds the rowid SQLite assigned to the row
+```
+
+When `AUTOINCREMENT_FIELD` is `true`, each item is inserted with its own `INSERT` statement (instead of one multi-row statement) so the generated id can be read and assigned per row; entities without an autoincrement field are still batched into a single multi-row `INSERT`.
 
 ## Relationships
 
@@ -132,10 +169,10 @@ pub struct Post {
 
 **Field type determines cardinality**
 
-| Field type  | Loaded via         | Meaning                                                     |
-| ----------- | ------------------- | ----------------------------------------------------------- |
-| `Option<T>` | `fetch_one_in_conn` | At most one related `T` row (e.g. a "belongs to" relation). |
-| `Vec<T>`    | `fetch_in_conn`     | Zero or more related `T` rows (e.g. a "has many" relation). |
+| Field type  | Loaded via     | Meaning                                                     |
+| ----------- | --------------- | ----------------------------------------------------------- |
+| `Option<T>` | `fetch_one_in`  | At most one related `T` row (e.g. a "belongs to" relation). |
+| `Vec<T>`    | `fetch_in`      | Zero or more related `T` rows (e.g. a "has many" relation). |
 
 In both cases `T` must implement `rusqlite_orm::dao::Entity` (i.e. it must itself be a `#[derive(Entity)]` struct).
 
@@ -160,14 +197,14 @@ pub membership: Option<Membership>,
 
 - Fields marked `#[relationship(...)]` are implicitly treated like `#[transient]`: they are excluded from `INSERT`/`SELECT` column lists and are populated via `Default::default()` when a row is first mapped into the struct, so the struct must implement `Default`. `#[transient]` and `#[relationship(...)]` cannot be combined on the same field — that's a compile error.
 - The macro generates two **instance methods** per relationship field (not on the repository, but directly on `YourStruct`):
-  - `fetch_<field>_relationship(&mut self) -> rusqlite_orm::database::errors::Result<()>` — opens its own pooled connection via `Database::run_in_connection`, runs `<T>Repository::select().where_(<condition>)`, and assigns the result into `self.<field>`.
-  - `fetch_<field>_relationship_in_conn(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::database::errors::Result<()>` — same, but reuses an existing connection or transaction so it can be composed with other calls.
+  - `fetch_<field>_relationship(&mut self, db: &rusqlite_orm::database::DatabasePool) -> rusqlite_orm::errors::Result<()>` — opens its own pooled connection via `db.run_in_connection(...)`, runs `<T>Repository::select().where_(<condition>)`, and assigns the result into `self.<field>`.
+  - `fetch_<field>_relationship_in_conn(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()>` — same, but reuses an existing connection or transaction so it can be composed with other calls.
 - These methods mutate `self` in place; they don't return the related data, so call them and then read `self.<field>` afterwards.
 
 ```rust
-let mut post = PostRepository::select_by_id(1)?.unwrap();
-post.fetch_author_relationship()?;
-post.fetch_comments_relationship()?;
+let mut post = PostRepository::select_by_id(&db, 1)?.unwrap();
+post.fetch_author_relationship(&db)?;
+post.fetch_comments_relationship(&db)?;
 
 println!("{:?} has {} comments", post.author, post.comments.len());
 ```
@@ -180,7 +217,7 @@ Reads every `<version>_<name>.sql` file in the given directory (resolved relativ
 pub static DDLS: [rusqlite_orm::database::DdlVersion; N] = [ ... ];
 ```
 
-Each SQL file must start with a `--` comment line, used as the migration's human-readable description; the numeric prefix before the first `_` in the filename is used as the migration's version number. Blank lines and comment lines are stripped from the embedded SQL body. The resulting array is meant to be passed to `Database::create_schema(&DDLS)`.
+Each SQL file must start with a `--` comment line, used as the migration's human-readable description; the numeric prefix before the first `_` in the filename is used as the migration's version number. Blank lines and comment lines are stripped from the embedded SQL body. The resulting array is meant to be passed to `DatabasePool::create_schema(&DDLS)` (see [`orm/README.md`](../orm/README.md#3-open-the-database-and-apply-the-schema) for how to build the `DatabasePool` itself).
 
 ## License
 
