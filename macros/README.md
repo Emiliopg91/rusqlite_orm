@@ -42,6 +42,8 @@ pub struct User {
 | ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `#[column("...")]`                                   | Overrides the SQL column name (defaults to the field name, lowercased). Only the SQL name changes — the generated `entity::columns::*` constant is still named after the Rust field, not this override.                                          |
 | `#[transient]`                                       | Excludes the field from `INSERT`/`SELECT` column lists entirely. When mapping a row back into the struct, this field is filled in via `Default::default()` — the struct must implement `Default`.                                                  |
+| `#[default]`                                         | Excludes the field from the generated `INSERT` column list only — it's still part of `SELECT`/`FIELDS`. Use it for a column with a SQL-level `DEFAULT` you want SQLite to apply instead of sending a value from Rust (see [Default and autoincrement columns](#default-and-autoincrement-columns) below). |
+| `#[autoincrement]`                                   | Implies `#[default]`, and additionally marks this field as the one that receives the SQLite-assigned `rowid` after each insert. Only one field per struct may carry this attribute, and it must be typed `i64` — both are compile errors otherwise (see [Default and autoincrement columns](#default-and-autoincrement-columns) below). |
 | `#[relationship((local_field, remote_column), ...)]` | Declares the field as a related entity rather than a persisted column (see [Relationships](#relationships) below).                                                                                                                                 |
 
 Every persisted field's type must implement `Into<rusqlite_orm::types::value::Value>` — this covers all integer widths (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`), `f32`/`f64`, `bool`, `String`, `Vec<u8>` (mapped to a BLOB column) and `Option<T>` for any of the above (mapped to `NULL` when absent).
@@ -49,7 +51,7 @@ Every persisted field's type must implement `Into<rusqlite_orm::types::value::Va
 **Generated code**
 
 - `mod entity { pub mod columns { ... } }` — a typed `ColumnName<Self>` constant for every persisted field, named after the **field** in upper case (e.g. field `email` → `entity::columns::EMAIL`) — note that this is the field's own name, not its `#[column("...")]` override, so a field named `email` with `#[column("email_address")]` still gets `entity::columns::EMAIL`, not `entity::columns::EMAIL_ADDRESS` — plus `entity::TABLE` and `entity::SCHEMA`.
-- An `impl rusqlite_orm::dao::Entity for YourStruct` providing `SCHEMA`, `TABLE_NAME`, `FIELDS`, `map_from_row`, and `get_values`.
+- An `impl rusqlite_orm::dao::Entity for YourStruct` providing `SCHEMA`, `TABLE_NAME`, `FIELDS`, `INSERT_FIELDS`, `AUTOINCREMENT_FIELD`, `map_from_row`, `get_insert_values`, and `set_autoincrement_id`.
 - A `YourStructRepository` struct implementing `rusqlite_orm::dao::Repository<YourStruct>`.
 - `exists(db, ...)` / `select_by_id(db, ...)` (+ `_in`) and, as instance methods, `update_by_id(db)` / `delete_by_id(db)` (+ `_in`) when the struct has a `#[primary_key(...)]` attribute.
 - `select_by_<name>(db, ...)` / `count_by_<name>(db, ...)` (or `exists_by_<name>(db, ...)` for `#[unique(...)]`) (+ `_in_conn`) for every index declared with `#[index(...)]` or `#[unique(...)]`.
@@ -108,6 +110,41 @@ For `#[unique("tenant_username", (tenant_id, username))]`, the macro generates o
 For `#[index("last_name", (last_name))]`, the equivalent non-unique set is generated with an extra `order_by` parameter and `count_by_last_name(db, ...)`/`count_by_last_name_in_conn(conn, ...)` returning `i64` instead of `exists_by_*`/`bool`.
 
 The `#[unique(...)]` attribute only generates lookup functions based on the assumption that the column group is unique; it does **not** create a `UNIQUE` constraint in the database schema itself — that still has to be declared in your DDL (see [`dlls!(path)`](#dllspath) below).
+
+## Default and autoincrement columns
+
+```rust
+#[derive(Entity, Debug, Clone, Default)]
+#[entity(table = "users")]
+#[primary_key(id)]
+pub struct User {
+    #[autoincrement]
+    pub id: i64,
+    pub email: String,
+    #[default]
+    pub created_at: i64,
+}
+```
+
+- `#[default]` removes a field from the generated `INSERT` column list — the statement omits the column entirely, so SQLite falls back to whatever `DEFAULT` (or `NULL`) is declared for it in your DDL. The field is still part of `FIELDS`/`SELECT` and mapped back normally by `map_from_row`.
+- `#[autoincrement]` implies `#[default]` (it's also skipped on `INSERT`) and additionally:
+  - sets `Entity::AUTOINCREMENT_FIELD` to `true` for the struct,
+  - generates an `Entity::set_autoincrement_id(&mut self, id: i64)` that assigns the field,
+  - is only valid on an `i64` field — a compile error is raised otherwise,
+  - can only be used once per struct — a second `#[autoincrement]` field is a compile error.
+- Fields without either attribute are still part of `INSERT` (the pre-existing behavior) and are collected into `Entity::INSERT_FIELDS`; `get_insert_values()` returns values for exactly those fields, in the same order.
+
+**Effect on `InsertBuilder`**
+
+Because inserting a row with an autoincrement field needs to read back SQLite's `last_insert_rowid()` and write it into the struct, `InsertBuilder::item(...)` takes `&'a mut T` rather than an owned `T`, and `execute`/`execute_in` take `&mut self`:
+
+```rust
+let mut user = User { id: 0, email: "alice@example.com".into(), created_at: 0 };
+UserRepository::insert().item(&mut user).execute(&db)?;
+// user.id now holds the rowid SQLite assigned to the row
+```
+
+When `AUTOINCREMENT_FIELD` is `true`, each item is inserted with its own `INSERT` statement (instead of one multi-row statement) so the generated id can be read and assigned per row; entities without an autoincrement field are still batched into a single multi-row `INSERT`.
 
 ## Relationships
 

@@ -27,6 +27,8 @@ This repository is a Cargo workspace made up of two crates:
 - **Relationships between entities** — annotate an `Option<T>` or `Vec<T>` field with `#[relationship((local_field, remote_column), ...)]` to get `fetch_<field>_relationship` / `fetch_<field>_relationship_in_conn` instance methods that lazily load the related row(s).
 - **Optional derived `PartialEq` / `Eq` / `Hash`** based on the entity's id column(s), via `comparable` / `hashable` attribute flags.
 - **Fields excluded from the schema** with `#[transient]`, populated via `Default::default()` when mapping rows back (requires the struct to implement `Default`). Relationship fields are excluded automatically the same way.
+- **Columns excluded from `INSERT` only** with `#[default]` — the field stays in `SELECT`/`FIELDS`, but is left out of the generated `INSERT` statement so SQLite applies its own column default.
+- **Autoincrement primary keys** — `#[autoincrement]` (implies `#[default]`) on a single `i64` field gets the generated `rowid` written back into that field after each insert.
 - **Multiple SQLite schemas** — `#[entity(schema = "...")]` attaches an entity to a schema other than `"main"` (e.g. an `ATTACH`ed database); every generated statement is qualified as `<schema>.<table>`.
 - **Wide column type support** — every signed/unsigned integer width, `f32`/`f64`, `bool`, `String`, `Vec<u8>` (BLOB) and `Option<T>` map onto `rusqlite_orm::types::value::Value` out of the box.
 - **Configurable pooled connections** — `DatabaseConnectionBuilder` is a typestate builder: it starts in an in-memory state (single connection, `PRAGMA journal_mode = MEMORY`), and calling `.location(path)` switches it to a file-backed state with its own defaults (pool of 5, `PRAGMA journal_mode = DELETE`). Pool size, min idle connections, connection/busy timeouts, journal mode and `PRAGMA foreign_keys` are all configurable before calling `.build(name)`, which opens an [`r2d2`](https://crates.io/crates/r2d2)-backed pool (via `r2d2_sqlite`) and hands you back an owned `DatabasePool` — there is no global singleton, so you're free to build more than one.
@@ -74,7 +76,7 @@ pub struct User {
 This expands into:
 
 - an `entity::columns` module with a typed constant per persisted field, named after the **field** (not the `#[column(...)]` override) in upper case — `entity::columns::ID`, `entity::columns::EMAIL` (the field is `email`, even though its SQL column is `email_address`), `entity::columns::NAME` — plus `entity::TABLE` and `entity::SCHEMA`,
-- an implementation of the `Entity` trait for `User` (`SCHEMA`, `TABLE_NAME`, `FIELDS`, `map_from_row`, `get_values`),
+- an implementation of the `Entity` trait for `User` (`SCHEMA`, `TABLE_NAME`, `FIELDS`, `INSERT_FIELDS`, `AUTOINCREMENT_FIELD`, `map_from_row`, `get_insert_values`),
 - `user.update_by_id(&db)` / `user.delete_by_id(&db)` **instance methods** on `User` (because the struct has a `#[primary_key(id)]` attribute), each with an `_in` counterpart taking a `&rusqlite::Transaction`,
 - a `UserRepository` unit struct implementing `rusqlite_orm::dao::Repository<User>`, with `UserRepository::exists(&db, id)` / `UserRepository::select_by_id(&db, id)` (plus their `_in` variants) and `UserRepository::select_by_email(&db, email, order_by)` (because of the `#[index("email", (email))]` attribute, plus its `_in_conn` variant),
 - `PartialEq` / `Eq` and `Hash` implementations based on `id` (because `comparable` and `hashable` are set to `true`).
@@ -82,6 +84,8 @@ This expands into:
 `#[unique(...)]` works exactly like `#[index(...)]` but marks the index as unique, generating a `select_by_name` that returns `Option<Self>` (and `exists_by_name`) instead. See [`macros/README.md`](./macros/README.md#indexes-and-unique-indexes) for the full syntax.
 
 `#[transient]` fields are skipped when building `INSERT`/`SELECT` column lists and are restored to their `Default` value when a row is mapped back into the struct.
+
+`#[default]` skips a field in the `INSERT` column list only (it's still part of `SELECT`/`FIELDS`), for columns that have a SQL-level `DEFAULT` you want SQLite to apply rather than sending a value from Rust. `#[autoincrement]` implies `#[default]` and, additionally, marks the field as the one that receives the SQLite-assigned `rowid` after each insert — it's only allowed on one `i64` field per struct (a compile error otherwise). Because an insert can write the generated id back into the struct, `InsertBuilder::item(...)` takes `&mut T` rather than an owned `T`.
 
 ### 2. Define your schema as versioned SQL files
 
@@ -140,8 +144,8 @@ use rusqlite_orm::{
 };
 
 // INSERT (managed: takes `&DatabasePool`)
-let user = User { id: 0, email: "alice@example.com".into(), name: "Alice".into(), transient_flag: false };
-UserRepository::insert().item(user.clone()).or_ignore().execute(&db)?;
+let mut user = User { id: 0, email: "alice@example.com".into(), name: "Alice".into(), transient_flag: false };
+UserRepository::insert().item(&mut user).or_ignore().execute(&db)?;
 
 // SELECT with WHERE / ORDER BY / LIMIT / OFFSET — needs an explicit connection
 let users = db.run_in_connection(|conn| {
@@ -181,7 +185,7 @@ Every builder and repository helper exposes a connection-taking variant (`_in` o
 use rusqlite_orm::database::DatabasePool;
 
 let fetched = db.run_in_transaction(|tx| {
-    UserRepository::insert().item(user.clone()).execute_in(tx)?;
+    UserRepository::insert().item(&mut user).execute_in(tx)?;
     Ok(UserRepository::select_by_id_in(tx, 1)?)
 })?;
 ```
