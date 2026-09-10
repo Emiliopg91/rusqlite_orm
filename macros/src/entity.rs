@@ -25,6 +25,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
     let named_fields = bail_on_err!(get_named_fields(&input));
     let ParsedFields {
         fields,
+        insert_fields,
         has_id,
         relationships,
         transients,
@@ -48,7 +49,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         &entity_attrs.table_name,
         &fields,
     );
-    let entity_trait_impl = build_entity_trait_impl(struct_name, &fields, transients);
+    let entity_trait_impl = build_entity_trait_impl(struct_name, &fields, &insert_fields, transients);
     let primary_key_operation = build_primary_key_impl(struct_name, &fields, &id_fields);
     let repository_primary_key_operation =
         repository_build_primary_key_impl(struct_name, &id_fields);
@@ -171,6 +172,7 @@ fn parse_fields(
 ) -> syn::Result<ParsedFields> {
     let mut has_id = false;
     let mut fields: Vec<FieldInfo> = Vec::new();
+    let mut insert_fields: Vec<FieldInfo> = Vec::new();
     let mut relationships = Vec::new();
     let mut transients = Vec::new();
     let mut id_fields = Vec::new();
@@ -226,8 +228,12 @@ fn parse_fields(
         has_id = has_id || is_id;
         let mut column_name = name.to_lowercase();
         let mut add = true;
+        let mut is_default = false;
 
         for attr in &f.attrs {
+            if attr.path().is_ident("default") {
+                is_default = true;
+            }
             if attr.path().is_ident("column") {
                 let lit = attr.parse_args::<syn::LitStr>()?;
                 column_name = lit.value().trim().to_string();
@@ -237,80 +243,83 @@ fn parse_fields(
                         "Attribute name cannot be empty",
                     ));
                 }
-            } else if attr.path().is_ident("relationship") {
-                add = false;
-                transients.push(f.ident.clone().unwrap());
+            } else {
+                if attr.path().is_ident("relationship") {
+                    add = false;
+                    transients.push(f.ident.clone().unwrap());
 
-                let Type::Path(type_path) = &f.ty else {
-                    return Err(syn::Error::new_spanned(f, "Expected Option or Vec"));
-                };
+                    let Type::Path(type_path) = &f.ty else {
+                        return Err(syn::Error::new_spanned(f, "Expected Option or Vec"));
+                    };
 
-                let Some(segment) = type_path.path.segments.last() else {
-                    return Err(syn::Error::new_spanned(
-                        f,
-                        "Cannot determine relationship type",
-                    ));
-                };
-
-                let PathArguments::AngleBracketed(args) = &segment.arguments else {
-                    return Err(syn::Error::new_spanned(f, "Expected Option or Vec"));
-                };
-
-                let Some(generic_arg) = args.args.first() else {
-                    return Err(syn::Error::new_spanned(f, "Cannot extract generic type"));
-                };
-
-                let GenericArgument::Type(inner_ty) = generic_arg else {
-                    return Err(syn::Error::new_spanned(
-                        f,
-                        "Expected type in generic argument",
-                    ));
-                };
-
-                let by_id = match segment.ident.to_string().as_str() {
-                    "Option" => true,
-                    "Vec" => false,
-                    _ => {
+                    let Some(segment) = type_path.path.segments.last() else {
                         return Err(syn::Error::new_spanned(
                             f,
-                            "Relationship only can be holded in Vec or Option",
+                            "Cannot determine relationship type",
+                        ));
+                    };
+
+                    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+                        return Err(syn::Error::new_spanned(f, "Expected Option or Vec"));
+                    };
+
+                    let Some(generic_arg) = args.args.first() else {
+                        return Err(syn::Error::new_spanned(f, "Cannot extract generic type"));
+                    };
+
+                    let GenericArgument::Type(inner_ty) = generic_arg else {
+                        return Err(syn::Error::new_spanned(
+                            f,
+                            "Expected type in generic argument",
+                        ));
+                    };
+
+                    let by_id = match segment.ident.to_string().as_str() {
+                        "Option" => true,
+                        "Vec" => false,
+                        _ => {
+                            return Err(syn::Error::new_spanned(
+                                f,
+                                "Relationship only can be holded in Vec or Option",
+                            ));
+                        }
+                    };
+
+                    let joins: Vec<(Ident, Path)> =
+                        attr.parse_args_with(|input: ParseStream| {
+                            let pairs: Punctuated<(Ident, Path), syn::token::Comma> =
+                                Punctuated::<(Ident, Path), Token![,]>::parse_terminated_with(
+                                    input,
+                                    |input: ParseStream| {
+                                        let content;
+                                        syn::parenthesized!(content in input);
+
+                                        let local_field: Ident = content.parse()?;
+                                        content.parse::<Token![,]>()?;
+                                        let remote_column: Path = content.parse()?;
+
+                                        Ok((local_field, remote_column))
+                                    },
+                                )?;
+                            Ok(pairs.into_iter().collect())
+                        })?;
+
+                    if joins.is_empty() {
+                        return Err(syn::Error::new_spanned(
+                            attr,
+                            "Columns for join cannot be empty",
                         ));
                     }
-                };
 
-                let joins: Vec<(Ident, Path)> = attr.parse_args_with(|input: ParseStream| {
-                    let pairs: Punctuated<(Ident, Path), syn::token::Comma> =
-                        Punctuated::<(Ident, Path), Token![,]>::parse_terminated_with(
-                            input,
-                            |input: ParseStream| {
-                                let content;
-                                syn::parenthesized!(content in input);
+                    relationships.push(RelationshipDefinition {
+                        field: f.ident.clone().unwrap(),
+                        by_id,
+                        ty: inner_ty.clone(),
+                        joins,
+                    });
 
-                                let local_field: Ident = content.parse()?;
-                                content.parse::<Token![,]>()?;
-                                let remote_column: Path = content.parse()?;
-
-                                Ok((local_field, remote_column))
-                            },
-                        )?;
-                    Ok(pairs.into_iter().collect())
-                })?;
-
-                if joins.is_empty() {
-                    return Err(syn::Error::new_spanned(
-                        attr,
-                        "Columns for join cannot be empty",
-                    ));
+                    continue;
                 }
-
-                relationships.push(RelationshipDefinition {
-                    field: f.ident.clone().unwrap(),
-                    by_id,
-                    ty: inner_ty.clone(),
-                    joins,
-                });
-
-                continue;
             }
         }
 
@@ -319,13 +328,19 @@ fn parse_fields(
                 return Err(syn::Error::new_spanned(f, "Duplicated column name"));
             }
 
-            fields.push(FieldInfo {
-                ident,
-                column: column_name,
-                ty: f.ty.clone(),
-                const_ident,
-                is_id,
-            });
+            let field_info = FieldInfo {
+                    ident,
+                    column: column_name,
+                    ty: f.ty.clone(),
+                    const_ident,
+                    is_id,
+                };
+
+            fields.push(field_info.clone());
+
+            if !is_default {
+                insert_fields.push(field_info.clone());
+            }
         }
     }
 
@@ -338,6 +353,7 @@ fn parse_fields(
 
     Ok(ParsedFields {
         fields,
+        insert_fields,
         has_id,
         relationships,
         transients,
@@ -627,12 +643,19 @@ fn build_entity_module(
 fn build_entity_trait_impl(
     struct_name: &syn::Ident,
     fields: &[FieldInfo],
+    insert_fields: &[FieldInfo],
     transients: Vec<Ident>,
 ) -> TokenStream2 {
     let field_name_list = fields.iter().map(|f| {
         let ident = &f.const_ident;
         quote! { self::entity::columns::#ident }
     });
+    
+    let insert_field_name_list = insert_fields.iter()
+    .map(|f| {
+        let ident = &f.const_ident;
+        quote! { self::entity::columns::#ident }
+    }).collect::<Vec<_>>();
 
     let map_from_rows_lines = fields.iter().enumerate().map(|(idx, f)| {
         let ident = &f.ident;
@@ -646,7 +669,7 @@ fn build_entity_trait_impl(
         }
     });
 
-    let get_values_lines = fields.iter().map(|f| {
+    let get_values_lines = insert_fields.iter().map(|f| {
         let ident = &f.ident;
         quote! { self.#ident.clone().into() }
     });
@@ -664,6 +687,10 @@ fn build_entity_trait_impl(
             const FIELDS: &'static [rusqlite_orm::types::column_name::ColumnName<Self>] =
                 &[ #(#field_name_list),* ];
 
+            #[doc = "Array of default column names"]
+            const INSERT_FIELDS: &'static [rusqlite_orm::types::column_name::ColumnName<Self>] =
+                &[ #(#insert_field_name_list),* ];
+
             #[doc = "Repository type"]
             type Repository = #repository;
 
@@ -675,8 +702,8 @@ fn build_entity_trait_impl(
                 })
             }
 
-            #[doc = "Get array of values from instance"]
-            fn get_values(&self) -> Vec<rusqlite_orm::types::value::Value> {
+            #[doc = "Get array of values for insert from instance"]
+            fn get_insert_values(&self) -> Vec<rusqlite_orm::types::value::Value> {
                 vec![
                     #(#get_values_lines),*
                 ]
@@ -1075,6 +1102,7 @@ fn build_hashable_impl(
     }
 }
 
+#[derive(Clone)]
 struct FieldInfo {
     ident: syn::Ident,
     column: String,
@@ -1092,6 +1120,7 @@ struct EntityAttrs {
 
 struct ParsedFields {
     fields: Vec<FieldInfo>,
+    insert_fields: Vec<FieldInfo>,
     transients: Vec<Ident>,
     relationships: Vec<RelationshipDefinition>,
     has_id: bool,

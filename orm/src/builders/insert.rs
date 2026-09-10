@@ -64,7 +64,7 @@ where
             "INTO '{}'.'{}' ({}) VALUES ",
             T::SCHEMA,
             T::TABLE_NAME,
-            T::FIELDS
+            T::INSERT_FIELDS
                 .iter()
                 .map(|f| f.as_ref().to_string())
                 .collect::<Vec<String>>()
@@ -72,7 +72,7 @@ where
         ));
 
         let values_str =
-            vec![format!("({})", vec!["?"; T::FIELDS.len()].join(", ")); self.items.len()]
+            vec![format!("({})", vec!["?"; T::INSERT_FIELDS.len()].join(", ")); self.items.len()]
                 .join(", ");
 
         sentence.push_str(&values_str);
@@ -80,7 +80,7 @@ where
         let values = self
             .items
             .iter()
-            .flat_map(|item| T::get_values(item).into_iter())
+            .flat_map(|item| T::get_insert_values(item).into_iter())
             .collect::<Vec<Value>>();
 
         Self::log_query_start(&sentence, &values);

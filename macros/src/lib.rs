@@ -10,7 +10,16 @@ pub fn dlls(input: TokenStream) -> TokenStream {
 
 #[proc_macro_derive(
     Entity,
-    attributes(entity, primary_key, transient, column, index, relationship, unique)
+    attributes(
+        entity,
+        primary_key,
+        transient,
+        column,
+        index,
+        relationship,
+        unique,
+        default
+    )
 )]
 pub fn derive_entity(input: TokenStream) -> TokenStream {
     entity::derive_entity(input)
