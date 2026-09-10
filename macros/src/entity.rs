@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
-use quote::{format_ident, quote};
+use quote::{ToTokens, format_ident, quote};
 use syn::{
     Data, DeriveInput, Fields, GenericArgument, Ident, Path, PathArguments, Token, Type,
     parenthesized, parse::ParseStream, parse_macro_input, parse_quote, punctuated::Punctuated,
@@ -29,6 +29,7 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         has_id,
         relationships,
         transients,
+        autoincrement_field,
     } = bail_on_err!(parse_fields(&input, named_fields));
 
     let repo_ident = format_ident!("{}Repository", struct_name);
@@ -49,7 +50,13 @@ pub fn derive_entity(input: TokenStream) -> TokenStream {
         &entity_attrs.table_name,
         &fields,
     );
-    let entity_trait_impl = build_entity_trait_impl(struct_name, &fields, &insert_fields, transients);
+    let entity_trait_impl = build_entity_trait_impl(
+        struct_name,
+        &fields,
+        &insert_fields,
+        autoincrement_field,
+        transients,
+    );
     let primary_key_operation = build_primary_key_impl(struct_name, &fields, &id_fields);
     let repository_primary_key_operation =
         repository_build_primary_key_impl(struct_name, &id_fields);
@@ -176,6 +183,7 @@ fn parse_fields(
     let mut relationships = Vec::new();
     let mut transients = Vec::new();
     let mut id_fields = Vec::new();
+    let mut autoincrement_field = None;
 
     for attr in &input.attrs {
         if attr.path().is_ident("primary_key") {
@@ -229,10 +237,20 @@ fn parse_fields(
         let mut column_name = name.to_lowercase();
         let mut add = true;
         let mut is_default = false;
+        let mut is_autoincrement = false;
 
         for attr in &f.attrs {
             if attr.path().is_ident("default") {
                 is_default = true;
+            } else if attr.path().is_ident("autoincrement") {
+                if autoincrement_field.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        attr,
+                        "Multiple autoincrement columns not allowed",
+                    ));
+                };
+                is_default = true;
+                is_autoincrement = true;
             }
             if attr.path().is_ident("column") {
                 let lit = attr.parse_args::<syn::LitStr>()?;
@@ -324,22 +342,33 @@ fn parse_fields(
         }
 
         if add {
+            if is_autoincrement && f.ty.to_token_stream().to_string() != "i64" {
+                return Err(syn::Error::new_spanned(
+                    f,
+                    "Only i64 fields are allowed to be autoincrement",
+                ));
+            }
+
             if fields.iter().any(|f| f.column == column_name) {
                 return Err(syn::Error::new_spanned(f, "Duplicated column name"));
             }
 
             let field_info = FieldInfo {
-                    ident,
-                    column: column_name,
-                    ty: f.ty.clone(),
-                    const_ident,
-                    is_id,
-                };
+                ident,
+                column: column_name,
+                ty: f.ty.clone(),
+                const_ident,
+                is_id,
+            };
 
             fields.push(field_info.clone());
 
             if !is_default {
                 insert_fields.push(field_info.clone());
+            }
+
+            if is_autoincrement {
+                autoincrement_field = Some(field_info);
             }
         }
     }
@@ -357,6 +386,7 @@ fn parse_fields(
         has_id,
         relationships,
         transients,
+        autoincrement_field,
     })
 }
 
@@ -644,18 +674,21 @@ fn build_entity_trait_impl(
     struct_name: &syn::Ident,
     fields: &[FieldInfo],
     insert_fields: &[FieldInfo],
+    autoincrement_field: Option<FieldInfo>,
     transients: Vec<Ident>,
 ) -> TokenStream2 {
     let field_name_list = fields.iter().map(|f| {
         let ident = &f.const_ident;
         quote! { self::entity::columns::#ident }
     });
-    
-    let insert_field_name_list = insert_fields.iter()
-    .map(|f| {
-        let ident = &f.const_ident;
-        quote! { self::entity::columns::#ident }
-    }).collect::<Vec<_>>();
+
+    let insert_field_name_list = insert_fields
+        .iter()
+        .map(|f| {
+            let ident = &f.const_ident;
+            quote! { self::entity::columns::#ident }
+        })
+        .collect::<Vec<_>>();
 
     let map_from_rows_lines = fields.iter().enumerate().map(|(idx, f)| {
         let ident = &f.ident;
@@ -675,6 +708,25 @@ fn build_entity_trait_impl(
     });
     let repository = format_ident!("{}Repository", struct_name);
 
+    let autoincrement_value = if autoincrement_field.is_some() {
+        quote! {
+            true;
+        }
+    } else {
+        quote! {
+            false;
+        }
+    };
+
+    let autoincrement_method = if let Some(autoincrement_field) = autoincrement_field {
+        let ident = &autoincrement_field.ident;
+        quote! {
+            self.#ident = id;
+        }
+    } else {
+        quote! {}
+    };
+
     quote! {
         impl rusqlite_orm::dao::Entity for #struct_name {
             #[doc = "Database schema constant"]
@@ -690,6 +742,10 @@ fn build_entity_trait_impl(
             #[doc = "Array of default column names"]
             const INSERT_FIELDS: &'static [rusqlite_orm::types::column_name::ColumnName<Self>] =
                 &[ #(#insert_field_name_list),* ];
+
+            #[doc = "Auto increment field for table"]
+            const AUTOINCREMENT_FIELD: bool =
+                #autoincrement_value
 
             #[doc = "Repository type"]
             type Repository = #repository;
@@ -707,6 +763,11 @@ fn build_entity_trait_impl(
                 vec![
                     #(#get_values_lines),*
                 ]
+            }
+
+            #[doc = "Set the autoincrement id to field"]
+            fn set_autoincrement_id(&mut self, id: i64) {
+                #autoincrement_method
             }
         }
     }
@@ -1124,6 +1185,7 @@ struct ParsedFields {
     transients: Vec<Ident>,
     relationships: Vec<RelationshipDefinition>,
     has_id: bool,
+    autoincrement_field: Option<FieldInfo>,
 }
 
 struct RelationshipDefinition {

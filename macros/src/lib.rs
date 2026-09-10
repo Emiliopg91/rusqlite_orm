@@ -18,7 +18,8 @@ pub fn dlls(input: TokenStream) -> TokenStream {
         index,
         relationship,
         unique,
-        default
+        default,
+        autoincrement
     )
 )]
 pub fn derive_entity(input: TokenStream) -> TokenStream {
