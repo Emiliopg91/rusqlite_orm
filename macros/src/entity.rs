@@ -816,7 +816,7 @@ fn build_entity_with_relationships_trait_impl(
             };
 
             let fn_name = format_ident!("fetch_{}_relationship", field);
-            let fn_name_conn = format_ident!("fetch_{}_relationship_in_conn", field);
+            let fn_name_conn = format_ident!("fetch_{}_relationship_in", field);
 
             let doc = format!("Load relationship for {} field", field);
             let doc_conn = format!("{} in conn", doc);
@@ -985,7 +985,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             index.name,
         );
         let fn_name_conn = format_ident!(
-            "{}_in_conn",
+            "{}_in",
             fn_name,
         );
         let fn_name_count = format_ident!(
@@ -994,7 +994,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             index.name,
         );
         let fn_name_count_conn = format_ident!(
-            "{}_in_conn",
+            "{}_in",
             fn_name_count,
         );
 
