@@ -4,3 +4,6 @@ pub use r2d2_sqlite::rusqlite;
 pub mod builders;
 pub mod errors;
 pub mod types;
+
+#[cfg(feature = "derive")]
+pub use rusqlite_orm_macros::{Entity, dlls};

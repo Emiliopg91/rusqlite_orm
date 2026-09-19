@@ -342,11 +342,12 @@ dependencies = [
 
 [[package]]
 name = "rusqlite_orm"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "log",
  "r2d2",
  "r2d2_sqlite",
+ "rusqlite_orm_macros",
  "serde",
  "tempfile",
  "thiserror",
