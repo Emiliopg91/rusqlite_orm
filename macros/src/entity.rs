@@ -965,11 +965,9 @@ fn repository_build_primary_key_impl(
                 conn: &rusqlite_orm::rusqlite::Connection,
                 #(#by_id_params),*
             ) -> rusqlite_orm::errors::Result<Option<#struct_name>> {
-                Ok(<Self as rusqlite_orm::dao::Repository<#struct_name>>::select()
+                <Self as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#id_condition)
-                    .fetch_in(conn)?
-                    .into_iter()
-                    .next())
+                    .fetch_one_in(conn)
             }
     }
 }

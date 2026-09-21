@@ -1,3 +1,5 @@
+use std::fmt::Write;
+
 use crate::rusqlite::{
     ToSql,
     types::{Null, ToSqlOutput, ValueRef},
@@ -60,7 +62,7 @@ impl Value {
                 let mut s = String::with_capacity(v.len() * 2 + 3);
                 s.push_str("X'");
                 for byte in v {
-                    s.push_str(&format!("{byte:02X}"));
+                    let _ = write!(s, "{byte:02X}");
                 }
                 s.push('\'');
                 s
@@ -89,10 +91,9 @@ impl ToSql for Value {
             Value::Float32(v) => ToSqlOutput::from(*v as f64),
             Value::Float64(v) => ToSqlOutput::from(*v),
             Value::Bool(v) => ToSqlOutput::from(*v),
-            Value::Text(v) => ToSqlOutput::from(v.clone()),
+            Value::Text(v) | Value::Raw(v) => ToSqlOutput::Borrowed(ValueRef::Text(v.as_bytes())),
             Value::Blob(v) => ToSqlOutput::Borrowed(ValueRef::Blob(v)),
             Value::Null => ToSqlOutput::from(Null),
-            Value::Raw(v) => ToSqlOutput::from(v.clone()),
         })
     }
 }

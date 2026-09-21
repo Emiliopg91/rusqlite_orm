@@ -113,16 +113,15 @@ pub fn dlls(input: TokenStream) -> TokenStream {
                 version: #version,
                 description: #description,
                 sql: #content,
+                update_fn: None
             }
         });
     }
 
-    let len = entries.len();
-
     quote! {
-        pub static DDLS: [rusqlite_orm::database::DdlVersion; #len] = [
+        [
             #(#entries),*
-        ];
+        ]
     }
     .into()
 }

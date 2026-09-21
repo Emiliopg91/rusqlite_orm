@@ -1,14 +1,16 @@
+use std::fmt::Write;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use crate::database::DatabasePool;
-use crate::rusqlite::params_from_iter;
+use crate::rusqlite::{Statement, params_from_iter};
 
 use crate::{
-    builders::QueryBuilder,
+    builders::{QueryBuilder, log_query_ending, log_query_start},
     dao::Entity,
     errors::DatabaseError,
     types::{
-        column_name::ColumnName, order_by::OrderBy, row::Row, row::Rows, subquery::Subquery,
+        column_name::{ColumnName, write_column_list}, order_by::OrderBy, row::Row, row::Rows, subquery::Subquery,
         value::Value, where_clause::Where,
     },
 };
@@ -36,23 +38,41 @@ where
     }
 }
 
+/// What a select projects and how each result row is turned into a value:
+/// [`Mappeable`] selects every column and maps rows to the entity, [`NonMappeable`]
+/// selects the given columns and returns raw [`Row`]s.
 pub trait ColumnsOf<T>
 where
     T: Entity,
 {
-    fn columns(&self) -> String;
+    type Output;
+
+    fn write_columns(&self, out: &mut String);
+
+    fn query(
+        &self,
+        stmt: &mut Statement,
+        params: &[&Value],
+    ) -> Result<Vec<Self::Output>, crate::rusqlite::Error>;
 }
 
 impl<T> ColumnsOf<T> for Mappeable
 where
     T: Entity,
 {
-    fn columns(&self) -> String {
-        T::FIELDS
-            .iter()
-            .map(|c| c.to_string())
-            .collect::<Vec<String>>()
-            .join(", ")
+    type Output = T;
+
+    fn write_columns(&self, out: &mut String) {
+        write_column_list(out, T::FIELDS);
+    }
+
+    fn query(
+        &self,
+        stmt: &mut Statement,
+        params: &[&Value],
+    ) -> Result<Vec<T>, crate::rusqlite::Error> {
+        stmt.query_map(params_from_iter(params.iter().copied()), T::map_from_row)?
+            .collect()
     }
 }
 
@@ -60,19 +80,25 @@ impl<T> ColumnsOf<T> for NonMappeable<T>
 where
     T: Entity,
 {
-    fn columns(&self) -> String {
-        let cols = self
-            .columns
-            .iter()
-            .map(|c| c.to_string())
-            .collect::<Vec<String>>()
-            .join(", ");
+    type Output = Row;
 
+    fn write_columns(&self, out: &mut String) {
         if self.distinct {
-            format!("DISTINCT {}", cols)
-        } else {
-            cols
+            out.push_str("DISTINCT ");
         }
+        write_column_list(out, &self.columns);
+    }
+
+    fn query(
+        &self,
+        stmt: &mut Statement,
+        params: &[&Value],
+    ) -> Result<Rows, crate::rusqlite::Error> {
+        let names: Arc<[String]> = stmt.column_names().into_iter().map(String::from).collect();
+        stmt.query_map(params_from_iter(params.iter().copied()), |row| {
+            Row::from_row(&names, row)
+        })?
+        .collect()
     }
 }
 
@@ -146,46 +172,42 @@ where
         self
     }
 
-    fn build_sql(&self) -> (String, Vec<Value>) {
-        let mut sentence = format!(
-            "SELECT {} FROM '{}'.'{}'",
-            self.kind.columns(),
-            T::SCHEMA,
-            T::TABLE_NAME
-        );
+    /// Appends ` WHERE ...` (if there is a condition) and collects its bound parameters.
+    fn push_where<'a>(&'a self, sentence: &mut String, params: &mut Vec<&'a Value>) {
+        if let Some(condition) = &self.condition {
+            sentence.push_str(" WHERE ");
+            condition.write_sql(sentence);
+            condition.push_params(params);
+        }
+    }
+
+    fn build_sql(&self, limit: Option<u32>) -> (String, Vec<&Value>) {
+        let mut sentence = String::from("SELECT ");
+        self.kind.write_columns(&mut sentence);
+        let _ = write!(sentence, " FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
 
         let mut params = Vec::new();
-        if let Some(condition) = &self.condition {
-            sentence.push_str(&format!(" WHERE {}", condition.to_sql()));
-            params = condition.clone().into_params();
+        self.push_where(&mut sentence, &mut params);
+
+        for (i, order) in self.order.iter().enumerate() {
+            sentence.push_str(if i == 0 { " ORDER BY " } else { ", " });
+            order.write_sql(&mut sentence);
         }
 
-        if !self.order.is_empty() {
-            sentence.push_str(" ORDER BY ");
-            sentence.push_str(
-                &self
-                    .order
-                    .iter()
-                    .map(|o| o.to_sql())
-                    .collect::<Vec<String>>()
-                    .join(", "),
-            );
-        }
-
-        if let Some(limit) = self.limit {
-            sentence.push_str(&format!(" LIMIT {}", limit));
+        if let Some(limit) = limit {
+            let _ = write!(sentence, " LIMIT {}", limit);
         }
 
         if let Some(offset) = self.offset {
-            sentence.push_str(&format!(" OFFSET {}", offset));
+            let _ = write!(sentence, " OFFSET {}", offset);
         }
 
         (sentence, params)
     }
 
     pub fn to_subquery(&self) -> Subquery {
-        let (sql, params) = self.build_sql();
-        Subquery::new(sql, params)
+        let (sql, params) = self.build_sql(self.limit);
+        Subquery::new(sql, params.into_iter().cloned().collect())
     }
 
     pub fn count(&self, db: &DatabasePool) -> crate::errors::Result<i64> {
@@ -197,20 +219,62 @@ where
 
     pub fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
         let mut sentence = format!("SELECT COUNT(*) FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
-
         let mut params = Vec::new();
-        if let Some(condition) = &self.condition {
-            sentence.push_str(&format!(" WHERE {}", condition.to_sql()));
-            params = condition.clone().into_params();
-        }
+        self.push_where(&mut sentence, &mut params);
 
-        crate::builders::log_query_start(&sentence, &params);
+        log_query_start(&sentence, params.iter().copied());
         let total: i64 = conn
-            .query_row(&sentence, params_from_iter(params), |row| row.get(0))
+            .prepare_cached(&sentence)
+            .and_then(|mut stmt| {
+                stmt.query_row(params_from_iter(params.iter().copied()), |row| row.get(0))
+            })
             .map_err(DatabaseError::Select)?;
-        crate::builders::log_query_ending(total as usize, "Counted");
+        log_query_ending(total as usize, "Counted");
 
         Ok(total)
+    }
+
+    pub fn fetch_in(
+        &self,
+        conn: &crate::rusqlite::Connection,
+    ) -> crate::errors::Result<Vec<K::Output>> {
+        self.fetch_limited(conn, self.limit)
+    }
+
+    /// First matching row, if any. Runs with `LIMIT 1` so SQLite stops after one row.
+    pub fn fetch_one_in(
+        &self,
+        conn: &crate::rusqlite::Connection,
+    ) -> crate::errors::Result<Option<K::Output>> {
+        let limit = self.limit.map_or(1, |limit| limit.min(1));
+        Ok(self.fetch_limited(conn, Some(limit))?.into_iter().next())
+    }
+
+    pub fn fetch_one(&self, db: &DatabasePool) -> crate::errors::Result<Option<K::Output>> {
+        db.run_in_connection(|conn| {
+            let res = self.fetch_one_in(conn)?;
+            Ok(res)
+        })
+    }
+
+    fn fetch_limited(
+        &self,
+        conn: &crate::rusqlite::Connection,
+        limit: Option<u32>,
+    ) -> crate::errors::Result<Vec<K::Output>> {
+        let (sentence, params) = self.build_sql(limit);
+
+        log_query_start(&sentence, params.iter().copied());
+        let mut stmt = conn
+            .prepare_cached(&sentence)
+            .map_err(DatabaseError::Select)?;
+        let res = self
+            .kind
+            .query(&mut stmt, &params)
+            .map_err(DatabaseError::Select)?;
+        log_query_ending(res.len(), "Selected");
+
+        Ok(res)
     }
 }
 
@@ -228,41 +292,6 @@ where
         self.kind.columns = fields.to_vec();
         self
     }
-
-    pub fn fetch_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<Rows> {
-        let (sentence, params) = self.build_sql();
-
-        crate::builders::log_query_start(&sentence, &params);
-        let mut stmt = conn
-            .prepare_cached(&sentence)
-            .map_err(DatabaseError::Select)?;
-        let rows = stmt
-            .query_map(params_from_iter(params.iter()), Row::from_row)
-            .map_err(DatabaseError::Select)?;
-
-        let res: Rows = rows
-            .collect::<Result<Rows, crate::rusqlite::Error>>()
-            .map_err(DatabaseError::Select)?;
-        crate::builders::log_query_ending(res.len(), "Selected");
-
-        Ok(res)
-    }
-
-    pub fn fetch_one_in(
-        &self,
-        conn: &crate::rusqlite::Connection,
-    ) -> crate::errors::Result<Option<Row>> {
-        let query = self.clone().limit(1);
-        let res = query.fetch_in(conn)?;
-        Ok(res.into_iter().next())
-    }
-
-    pub fn fetch_one(&self, db: &DatabasePool) -> crate::errors::Result<Option<Row>> {
-        db.run_in_connection(|conn| {
-            let res = self.fetch_one_in(conn)?;
-            Ok(res)
-        })
-    }
 }
 
 impl<T> SelectBuilder<T, Mappeable>
@@ -270,24 +299,22 @@ where
     T: Entity,
 {
     pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappeable<T>> {
-        SelectBuilder {
-            kind: NonMappeable {
-                columns: fields.to_vec(),
-                distinct: true,
-            },
-            condition: self.condition,
-            order: self.order,
-            limit: self.limit,
-            offset: self.offset,
-            _marker_entity: PhantomData,
-        }
+        self.into_non_mappeable(fields, true)
     }
 
     pub fn columns(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappeable<T>> {
+        self.into_non_mappeable(fields, false)
+    }
+
+    fn into_non_mappeable(
+        self,
+        fields: &[ColumnName<T>],
+        distinct: bool,
+    ) -> SelectBuilder<T, NonMappeable<T>> {
         SelectBuilder {
             kind: NonMappeable {
                 columns: fields.to_vec(),
-                distinct: false,
+                distinct,
             },
             condition: self.condition,
             order: self.order,
@@ -295,40 +322,5 @@ where
             offset: self.offset,
             _marker_entity: PhantomData,
         }
-    }
-
-    pub fn fetch_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<Vec<T>> {
-        let (sentence, params) = self.build_sql();
-
-        Self::log_query_start(&sentence, &params);
-        let mut stmt = conn
-            .prepare_cached(&sentence)
-            .map_err(DatabaseError::Select)?;
-        let rows = stmt
-            .query_map(params_from_iter(params.iter()), T::map_from_row)
-            .map_err(DatabaseError::Select)?;
-
-        let res: Vec<T> = rows
-            .collect::<Result<Vec<T>, crate::rusqlite::Error>>()
-            .map_err(DatabaseError::Select)?;
-        Self::log_query_ending(res.len(), "Selected");
-
-        Ok(res)
-    }
-
-    pub fn fetch_one_in(
-        &self,
-        conn: &crate::rusqlite::Connection,
-    ) -> crate::errors::Result<Option<T>> {
-        let query = self.clone().limit(1);
-        let res = query.fetch_in(conn)?;
-        Ok(res.into_iter().next())
-    }
-
-    pub fn fetch_one(&self, db: &DatabasePool) -> crate::errors::Result<Option<T>> {
-        db.run_in_connection(|conn| {
-            let res = self.fetch_one_in(conn)?;
-            Ok(res)
-        })
     }
 }

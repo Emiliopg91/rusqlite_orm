@@ -26,13 +26,17 @@ where
     T: Entity,
 {
     pub fn to_sql(self) -> String {
-        match self {
-            OrderBy::Asc(col) => {
-                format!("{} ASC", col)
-            }
-            OrderBy::Desc(col) => {
-                format!("{} DESC", col)
-            }
-        }
+        let mut out = String::new();
+        self.write_sql(&mut out);
+        out
+    }
+
+    pub(crate) fn write_sql(self, out: &mut String) {
+        let (col, direction) = match self {
+            OrderBy::Asc(col) => (col, " ASC"),
+            OrderBy::Desc(col) => (col, " DESC"),
+        };
+        out.push_str(col.as_ref());
+        out.push_str(direction);
     }
 }

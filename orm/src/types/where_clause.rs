@@ -1,6 +1,6 @@
 use crate::{dao::Entity, types::value::Value};
 
-use super::column_name::ColumnName;
+use super::column_name::{ColumnName, write_column_list};
 use super::subquery::Subquery;
 
 pub enum Where<T>
@@ -26,10 +26,26 @@ where
     Or(Vec<Where<T>>),
 }
 
-fn value_token(val: &Value) -> String {
+fn write_token(out: &mut String, val: &Value) {
     match val {
-        Value::Raw(sql) => sql.clone(),
-        _ => "?".to_string(),
+        Value::Raw(sql) => out.push_str(sql),
+        _ => out.push('?'),
+    }
+}
+
+fn write_joined<T: Entity>(out: &mut String, conditions: &[Where<T>], separator: &str) {
+    for (i, condition) in conditions.iter().enumerate() {
+        if i > 0 {
+            out.push_str(separator);
+        }
+        match condition {
+            Where::And(_) | Where::Or(_) => {
+                out.push('(');
+                condition.write_sql(out);
+                out.push(')');
+            }
+            _ => condition.write_sql(out),
+        }
     }
 }
 
@@ -38,142 +54,144 @@ where
     T: Entity,
 {
     pub fn to_sql(&self) -> String {
+        let mut out = String::new();
+        self.write_sql(&mut out);
+        out
+    }
+
+    /// Renders this condition into `out`, without intermediate allocations.
+    pub(crate) fn write_sql(&self, out: &mut String) {
+        let comparison = |out: &mut String, col: &ColumnName<T>, op: &str, val: &Value| {
+            out.push_str(col.as_ref());
+            out.push_str(op);
+            write_token(out, val);
+        };
+
         match self {
-            Self::Eq(col, val) => {
-                format!("{}={}", col, value_token(val))
-            }
-            Self::NotEq(col, val) => {
-                format!("{}!={}", col, value_token(val))
-            }
-            Self::Gt(col, val) => {
-                format!("{}>{}", col, value_token(val))
-            }
-            Self::Gte(col, val) => {
-                format!("{}>={}", col, value_token(val))
-            }
-            Self::Lt(col, val) => {
-                format!("{}<{}", col, value_token(val))
-            }
-            Self::Lte(col, val) => {
-                format!("{}<={}", col, value_token(val))
-            }
+            Self::Eq(col, val) => comparison(out, col, "=", val),
+            Self::NotEq(col, val) => comparison(out, col, "!=", val),
+            Self::Gt(col, val) => comparison(out, col, ">", val),
+            Self::Gte(col, val) => comparison(out, col, ">=", val),
+            Self::Lt(col, val) => comparison(out, col, "<", val),
+            Self::Lte(col, val) => comparison(out, col, "<=", val),
             Self::In(col, values) => {
-                let tokens = values
-                    .iter()
-                    .map(value_token)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                format!("{} IN ({})", col, tokens)
+                out.push_str(col.as_ref());
+                out.push_str(" IN (");
+                for (i, val) in values.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    write_token(out, val);
+                }
+                out.push(')');
             }
-            Self::InMultiple(cols, values) => {
-                let col_list = cols
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                let num_rows = values.len();
-
-                let tuple = format!("({})", vec!["?"; cols.len()].join(", "));
-                let tuples = vec![tuple; num_rows].join(", ");
-
-                format!("({}) IN ({})", col_list, tuples)
+            Self::InMultiple(cols, rows) => {
+                out.push('(');
+                write_column_list(out, cols);
+                out.push_str(") IN (");
+                for (i, row) in rows.iter().enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    out.push('(');
+                    for (j, val) in row.iter().enumerate() {
+                        if j > 0 {
+                            out.push_str(", ");
+                        }
+                        write_token(out, val);
+                    }
+                    out.push(')');
+                }
+                out.push(')');
             }
             Self::Null(col) => {
-                format!("{} IS NULL", col)
+                out.push_str(col.as_ref());
+                out.push_str(" IS NULL");
             }
             Self::NotNull(col) => {
-                format!("{} IS NOT NULL", col)
+                out.push_str(col.as_ref());
+                out.push_str(" IS NOT NULL");
             }
             Self::EqSub(col, sub) => {
-                format!("{}=({})", col, sub.sql)
+                out.push_str(col.as_ref());
+                out.push_str("=(");
+                out.push_str(&sub.sql);
+                out.push(')');
             }
             Self::NotEqSub(col, sub) => {
-                format!("{}!=({})", col, sub.sql)
+                out.push_str(col.as_ref());
+                out.push_str("!=(");
+                out.push_str(&sub.sql);
+                out.push(')');
             }
             Self::InSub(col, sub) => {
-                format!("{} IN ({})", col, sub.sql)
+                out.push_str(col.as_ref());
+                out.push_str(" IN (");
+                out.push_str(&sub.sql);
+                out.push(')');
             }
             Self::NotInSub(col, sub) => {
-                format!("{} NOT IN ({})", col, sub.sql)
+                out.push_str(col.as_ref());
+                out.push_str(" NOT IN (");
+                out.push_str(&sub.sql);
+                out.push(')');
             }
             Self::InMultipleSub(cols, sub) => {
-                let col_list = cols
-                    .iter()
-                    .map(|c| c.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-
-                format!("({}) IN ({})", col_list, sub.sql)
+                out.push('(');
+                write_column_list(out, cols);
+                out.push_str(") IN (");
+                out.push_str(&sub.sql);
+                out.push(')');
             }
-            Self::And(conditions) => conditions
-                .clone()
-                .into_iter()
-                .map(|condition| match condition {
-                    Where::And(_) | Where::Or(_) => {
-                        format!("({})", condition.to_sql())
-                    }
-                    _ => condition.to_sql(),
-                })
-                .collect::<Vec<String>>()
-                .join(" AND "),
-            Self::Or(conditions) => conditions
-                .clone()
-                .into_iter()
-                .map(|condition| match condition {
-                    Where::And(_) | Where::Or(_) => {
-                        format!("({})", condition.to_sql())
-                    }
-                    _ => condition.to_sql(),
-                })
-                .collect::<Vec<String>>()
-                .join(" OR "),
+            Self::And(conditions) => write_joined(out, conditions, " AND "),
+            Self::Or(conditions) => write_joined(out, conditions, " OR "),
         }
     }
 
-    pub fn into_params(self) -> Vec<Value> {
+    /// Bound parameters of this condition, in the order their `?` appear in
+    /// [`Where::to_sql`] (`Value::Raw` is spliced into the SQL, so it is skipped).
+    pub(crate) fn params(&self) -> Vec<&Value> {
+        let mut out = Vec::new();
+        self.push_params(&mut out);
+        out
+    }
+
+    pub(crate) fn push_params<'a>(&'a self, out: &mut Vec<&'a Value>) {
         match self {
             Self::Eq(_, val)
             | Self::NotEq(_, val)
             | Self::Gt(_, val)
             | Self::Gte(_, val)
             | Self::Lt(_, val)
-            | Self::Lte(_, val) => match val {
-                Value::Raw(_) => vec![],
-                _ => vec![val],
-            },
-            Self::In(_, vals) => vals
-                .into_iter()
-                .filter(|val| !matches!(val, Value::Raw(_)))
-                .collect(),
-            Self::InMultiple(_, vals_arr) => {
-                let mut params = vec![];
-                for vals in vals_arr {
-                    for val in vals {
-                        if !matches!(val, Value::Raw(_)) {
-                            params.push(val)
-                        }
-                    }
+            | Self::Lte(_, val) => {
+                if !matches!(val, Value::Raw(_)) {
+                    out.push(val);
                 }
-
-                params
             }
-            Self::Null(_) | Self::NotNull(_) => {
-                vec![]
+            Self::In(_, vals) => {
+                out.extend(vals.iter().filter(|val| !matches!(val, Value::Raw(_))));
             }
+            Self::InMultiple(_, rows) => {
+                for row in rows {
+                    out.extend(row.iter().filter(|val| !matches!(val, Value::Raw(_))));
+                }
+            }
+            Self::Null(_) | Self::NotNull(_) => {}
             Self::And(conditions) | Self::Or(conditions) => {
-                let mut params = vec![];
                 for condition in conditions {
-                    params.extend(condition.into_params());
+                    condition.push_params(out);
                 }
-                params
             }
             Self::EqSub(_, sub)
             | Self::NotEqSub(_, sub)
             | Self::InSub(_, sub)
             | Self::NotInSub(_, sub)
-            | Self::InMultipleSub(_, sub) => sub.params,
+            | Self::InMultipleSub(_, sub) => out.extend(sub.params.iter()),
         }
+    }
+
+    pub fn into_params(self) -> Vec<Value> {
+        self.params().into_iter().cloned().collect()
     }
 }
 

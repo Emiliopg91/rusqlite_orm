@@ -1,23 +1,35 @@
-use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::types::value::Value;
 
+/// A result row of a non-mapped select. The column names are shared (one `Arc` per
+/// query, not per row) and values are stored positionally.
 #[derive(Clone, Default)]
 pub struct Row {
-    columns: HashMap<String, Value>,
+    names: Arc<[String]>,
+    values: Vec<Value>,
 }
 
 impl Row {
     pub fn get(&self, column: &str) -> Option<&Value> {
-        self.columns.get(column)
+        self.names
+            .iter()
+            .position(|name| name == column)
+            .map(|idx| &self.values[idx])
     }
 
-    pub(crate) fn from_row(row: &crate::rusqlite::Row) -> Result<Self, crate::rusqlite::Error> {
-        let mut columns = HashMap::with_capacity(row.as_ref().column_count());
-        for name in row.as_ref().column_names() {
-            columns.insert(name.to_string(), row.get_ref(name)?.into());
+    pub(crate) fn from_row(
+        names: &Arc<[String]>,
+        row: &crate::rusqlite::Row,
+    ) -> Result<Self, crate::rusqlite::Error> {
+        let mut values = Vec::with_capacity(names.len());
+        for idx in 0..names.len() {
+            values.push(row.get_ref(idx)?.into());
         }
-        Ok(Self { columns })
+        Ok(Self {
+            names: Arc::clone(names),
+            values,
+        })
     }
 }
 

@@ -44,3 +44,13 @@ where
         Self(value, PhantomData)
     }
 }
+
+/// Writes `a, b, c` into `out`.
+pub(crate) fn write_column_list<T: Entity>(out: &mut String, columns: &[ColumnName<T>]) {
+    for (i, column) in columns.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(column.as_ref());
+    }
+}

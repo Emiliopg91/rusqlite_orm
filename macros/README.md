@@ -2,6 +2,12 @@
 
 Procedural macros for [`rusqlite_orm`](../orm). This crate is meant to be used together with `rusqlite_orm`, not on its own.
 
+You normally don't need to depend on it directly: enabling the `derive` feature of `rusqlite_orm` re-exports both macros at its crate root (`rusqlite_orm::Entity`, `rusqlite_orm::dlls!`). The examples below use the derive-feature import paths; without the feature, import them from `rusqlite_orm_macros` instead.
+
+```toml
+rusqlite_orm = { version = "0.5", features = ["derive"] }
+```
+
 It provides two macros:
 
 ## `#[derive(Entity)]`
@@ -33,8 +39,8 @@ pub struct User {
 | `#[entity(comparable = true)]`        | Derives `PartialEq`/`Eq` comparing only the `#[primary_key(...)]` field(s). Requires a `#[primary_key(...)]` attribute.                                    |
 | `#[entity(hashable = true)]`          | Derives `Hash` based only on the `#[primary_key(...)]` field(s). Requires a `#[primary_key(...)]` attribute.                                               |
 | `#[primary_key(field_a, field_b, ...)]` | Struct-level attribute marking the listed fields as the primary key. Gets you, on the repository, `select_by_id`/`exists` (each with an `_in` variant), and on the entity instance, `update_by_id`/`delete_by_id` (each with an `_in` variant taking a `&rusqlite::Transaction`). Multiple fields are combined with `AND`. Referencing a field that doesn't exist on the struct is a compile error. |
-| `#[index("name", (col_a, col_b))]`    | Generates `select_by_name(db, ..., order_by)` (and `_in_conn`/`count_by_name`/`count_by_name_in_conn` variants) for the given column group. Can be repeated for multiple indexes. Returns `Vec<Self>`. |
-| `#[unique("name", (col_d, col_e))]`   | Same syntax as `#[index(...)]`, but for a column group that is unique. Generates `select_by_name(db, ...)` (and `_in_conn`/`exists_by_name`/`exists_by_name_in_conn` variants) returning `Option<Self>` instead of `Vec<Self>`, and without an `order_by` parameter (see [Indexes and unique indexes](#indexes-and-unique-indexes) below). |
+| `#[index("name", (col_a, col_b))]`    | Generates `select_by_name(db, ..., order_by)` (and `_in`/`count_by_name`/`count_by_name_in` variants) for the given column group. Can be repeated for multiple indexes. Returns `Vec<Self>`. |
+| `#[unique("name", (col_d, col_e))]`   | Same syntax as `#[index(...)]`, but for a column group that is unique. Generates `select_by_name(db, ...)` (and `_in`/`exists_by_name`/`exists_by_name_in` variants) returning `Option<Self>` instead of `Vec<Self>`, and without an `order_by` parameter (see [Indexes and unique indexes](#indexes-and-unique-indexes) below). |
 
 **Field-level attributes**
 
@@ -54,11 +60,11 @@ Every persisted field's type must implement `Into<rusqlite_orm::types::value::Va
 - An `impl rusqlite_orm::dao::Entity for YourStruct` providing `SCHEMA`, `TABLE_NAME`, `FIELDS`, `INSERT_FIELDS`, `AUTOINCREMENT_FIELD`, `map_from_row`, `get_insert_values`, and `set_autoincrement_id`.
 - A `YourStructRepository` struct implementing `rusqlite_orm::dao::Repository<YourStruct>`.
 - `exists(db, ...)` / `select_by_id(db, ...)` (+ `_in`) and, as instance methods, `update_by_id(db)` / `delete_by_id(db)` (+ `_in`) when the struct has a `#[primary_key(...)]` attribute.
-- `select_by_<name>(db, ...)` / `count_by_<name>(db, ...)` (or `exists_by_<name>(db, ...)` for `#[unique(...)]`) (+ `_in_conn`) for every index declared with `#[index(...)]` or `#[unique(...)]`.
+- `select_by_<name>(db, ...)` / `count_by_<name>(db, ...)` (or `exists_by_<name>(db, ...)` for `#[unique(...)]`) (+ `_in`) for every index declared with `#[index(...)]` or `#[unique(...)]`.
 - `PartialEq`/`Eq` and/or `Hash` impls when `comparable`/`hashable` are enabled.
-- `fetch_<field>_relationship(db)` / `fetch_<field>_relationship_in_conn(conn)` for every field annotated with `#[relationship(...)]`.
+- `fetch_<field>_relationship(db)` / `fetch_<field>_relationship_in(conn)` for every field annotated with `#[relationship(...)]`.
 
-Every generated function comes in two forms: a **managed** one (e.g. `select_by_id(db, id)`) that takes `db: &rusqlite_orm::database::DatabasePool` and opens its own pooled connection or transaction internally, and a connection-taking one for composing several calls atomically. The suffix for that second form isn't fully uniform across the crate: primary-key helpers (`exists_in`, `select_by_id_in`, and the instance methods `update_by_id_in`/`delete_by_id_in`) use plain `_in` and take a `conn: &rusqlite_orm::rusqlite::Connection` (the primary-key instance methods specifically need a `&rusqlite_orm::rusqlite::Transaction`, since they go through `UpdateBuilder`/`DeleteBuilder`), while index/unique/relationship helpers (`select_by_id_in_conn`, `count_by_name_in_conn`, `fetch_<field>_relationship_in_conn`, ...) use `_in_conn` and take a `conn: &rusqlite_orm::rusqlite::Connection`. Pass a `&mut rusqlite::Transaction` anywhere a `&rusqlite::Connection` is expected — it reborrows, since `Transaction` derefs to `Connection`.
+Every generated function comes in two forms: a **managed** one (e.g. `select_by_id(db, id)`) that takes `db: &rusqlite_orm::database::DatabasePool` and opens its own pooled connection or transaction internally, and a connection-taking one, suffixed `_in`, for composing several calls atomically (`exists_in`, `select_by_id_in`, `update_by_id_in`, `select_by_<name>_in`, `count_by_<name>_in`, `fetch_<field>_relationship_in`, ...). The `_in` form takes a `conn: &rusqlite_orm::rusqlite::Connection`, except the `update_by_id_in`/`delete_by_id_in` instance methods, which need a `&rusqlite_orm::rusqlite::Transaction` since they go through `UpdateBuilder`/`DeleteBuilder`. Pass a `&mut rusqlite::Transaction` anywhere a `&rusqlite::Connection` is expected — it reborrows, since `Transaction` derefs to `Connection`.
 
 Index/primary-key parameter types mirror the field types, with two exceptions to avoid unnecessary cloning: a `String` field becomes a `&str` parameter, and a `Vec<u8>` field becomes a `&[u8]` parameter.
 
@@ -98,16 +104,16 @@ Each attribute takes:
 | Return type | `Vec<Self>` | `Option<Self>` |
 | `order_by` parameter | Yes | No — a unique index can match at most one row, so ordering is meaningless |
 | Count/exists function | `count_by_<name>` -> `i64` | `exists_by_<name>` -> `bool` |
-| Fetch method used internally | `fetch_in` | `fetch_one_in` |
+| Fetch method used internally | `fetch_in` | `fetch_one_in` (runs with `LIMIT 1`) |
 
 For `#[unique("tenant_username", (tenant_id, username))]`, the macro generates on the repository impl:
 
 - `select_by_tenant_username(db, tenant_id, username) -> Result<Option<Self>>`
-- `select_by_tenant_username_in_conn(conn, tenant_id, username) -> Result<Option<Self>>`
+- `select_by_tenant_username_in(conn, tenant_id, username) -> Result<Option<Self>>`
 - `exists_by_tenant_username(db, tenant_id, username) -> Result<bool>`
-- `exists_by_tenant_username_in_conn(conn, tenant_id, username) -> Result<bool>`
+- `exists_by_tenant_username_in(conn, tenant_id, username) -> Result<bool>`
 
-For `#[index("last_name", (last_name))]`, the equivalent non-unique set is generated with an extra `order_by` parameter and `count_by_last_name(db, ...)`/`count_by_last_name_in_conn(conn, ...)` returning `i64` instead of `exists_by_*`/`bool`.
+For `#[index("last_name", (last_name))]`, the equivalent non-unique set is generated with an extra `order_by` parameter and `count_by_last_name(db, ...)`/`count_by_last_name_in(conn, ...)` returning `i64` instead of `exists_by_*`/`bool`.
 
 The `#[unique(...)]` attribute only generates lookup functions based on the assumption that the column group is unique; it does **not** create a `UNIQUE` constraint in the database schema itself — that still has to be declared in your DDL (see [`dlls!(path)`](#dllspath) below).
 
@@ -198,7 +204,7 @@ pub membership: Option<Membership>,
 - Fields marked `#[relationship(...)]` are implicitly treated like `#[transient]`: they are excluded from `INSERT`/`SELECT` column lists and are populated via `Default::default()` when a row is first mapped into the struct, so the struct must implement `Default`. `#[transient]` and `#[relationship(...)]` cannot be combined on the same field — that's a compile error.
 - The macro generates two **instance methods** per relationship field (not on the repository, but directly on `YourStruct`):
   - `fetch_<field>_relationship(&mut self, db: &rusqlite_orm::database::DatabasePool) -> rusqlite_orm::errors::Result<()>` — opens its own pooled connection via `db.run_in_connection(...)`, runs `<T>Repository::select().where_(<condition>)`, and assigns the result into `self.<field>`.
-  - `fetch_<field>_relationship_in_conn(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()>` — same, but reuses an existing connection or transaction so it can be composed with other calls.
+  - `fetch_<field>_relationship_in(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()>` — same, but reuses an existing connection or transaction so it can be composed with other calls.
 - These methods mutate `self` in place; they don't return the related data, so call them and then read `self.<field>` afterwards.
 
 ```rust
@@ -211,13 +217,28 @@ println!("{:?} has {} comments", post.author, post.comments.len());
 
 ## `dlls!(path)`
 
-Reads every `<version>_<name>.sql` file in the given directory (resolved relative to `CARGO_MANIFEST_DIR`) at compile time and embeds them into:
+Reads every `<version>_<name>.sql` file in the given directory (resolved relative to `CARGO_MANIFEST_DIR`) at compile time and expands to an **array expression** with one `rusqlite_orm::database::DdlVersion` per file — it does not declare any item, so you bind it yourself:
 
 ```rust
-pub static DDLS: [rusqlite_orm::database::DdlVersion; N] = [ ... ];
+let ddls = rusqlite_orm::dlls!("migrations");
+// [DdlVersion { version, description, sql, update_fn: None }, ...]
+
+// or, as a global (the length must be spelled out):
+static DDLS: [rusqlite_orm::database::DdlVersion; 3] = rusqlite_orm::dlls!("migrations");
 ```
 
-Each SQL file must start with a `--` comment line, used as the migration's human-readable description; the numeric prefix before the first `_` in the filename is used as the migration's version number. Blank lines and comment lines are stripped from the embedded SQL body. The resulting array is meant to be passed to `DatabasePool::create_schema(&DDLS)` (see [`orm/README.md`](../orm/README.md#3-open-the-database-and-apply-the-schema) for how to build the `DatabasePool` itself).
+Every entry is generated with `update_fn: None`. `DdlVersion::update_fn` is an `Option<fn(&mut rusqlite::Transaction) -> rusqlite_orm::errors::Result<()>>` that `create_schema` runs inside the same transaction, right after that migration's SQL; bind the array with `let mut` to assign one where a migration needs Rust code:
+
+```rust
+let mut ddls = rusqlite_orm::dlls!("migrations");
+for ddl in &mut ddls {
+    if ddl.version == 5 {
+        ddl.update_fn = Some(recalculate_derived_columns);
+    }
+}
+```
+
+Each SQL file must start with a `--` comment line, used as the migration's human-readable description; the numeric prefix before the first `_` in the filename is used as the migration's version number. Blank lines and comment lines are stripped from the embedded SQL body. The resulting array is meant to be passed to `DatabasePool::create_schema(&ddls)` (see [`orm/README.md`](../orm/README.md#3-open-the-database-and-apply-the-schema) for how to build the `DatabasePool` itself).
 
 ## License
 

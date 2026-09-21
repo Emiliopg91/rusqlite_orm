@@ -12,7 +12,7 @@ pub enum DatabaseError {
     #[error("Error obtaining pooled connection: {0}")]
     Pool(r2d2::Error),
     #[error("Error while creating schema: {0}")]
-    SchemaCreation(crate::rusqlite::Error),
+    SchemaCreation(Box<dyn std::error::Error + Send + Sync>),
     #[error("Error on transaction: {0}")]
     Transaction(Box<dyn std::error::Error + Send + Sync>),
     #[error("Error running on connection: {0}")]

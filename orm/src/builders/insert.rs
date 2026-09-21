@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use std::marker::PhantomData;
 
 use log::debug;
@@ -5,7 +6,12 @@ use log::debug;
 use crate::database::DatabasePool;
 use crate::rusqlite::params_from_iter;
 
-use crate::{builders::QueryBuilder, dao::Entity, errors::DatabaseError, types::value::Value};
+use crate::{
+    builders::{QueryBuilder, log_query_ending, log_query_start},
+    dao::Entity,
+    errors::DatabaseError,
+    types::{column_name::write_column_list, value::Value},
+};
 
 pub struct InsertBuilder<'a, T> {
     items: Vec<&'a mut T>,
@@ -55,6 +61,10 @@ where
         &mut self,
         tx: &crate::rusqlite::Transaction,
     ) -> crate::errors::Result<usize> {
+        if self.items.is_empty() {
+            return Ok(0);
+        }
+
         let mut sentence = "INSERT ".to_string();
 
         if self.or_ignore {
@@ -65,31 +75,33 @@ where
             }
         }
 
-        sentence.push_str(&format!(
-            "INTO '{}'.'{}' ({}) VALUES ",
-            T::SCHEMA,
-            T::TABLE_NAME,
-            T::INSERT_FIELDS
-                .iter()
-                .map(|f| f.as_ref().to_string())
-                .collect::<Vec<String>>()
-                .join(", "),
-        ));
+        let _ = write!(sentence, "INTO '{}'.'{}' (", T::SCHEMA, T::TABLE_NAME);
+        write_column_list(&mut sentence, T::INSERT_FIELDS);
+        sentence.push_str(") VALUES ");
+
+        let mut row_placeholders = String::with_capacity(T::INSERT_FIELDS.len() * 3 + 2);
+        row_placeholders.push('(');
+        for i in 0..T::INSERT_FIELDS.len() {
+            row_placeholders.push_str(if i == 0 { "?" } else { ", ?" });
+        }
+        row_placeholders.push(')');
 
         if T::AUTOINCREMENT_FIELD {
-            sentence.push_str(&format!(
-                "({})",
-                vec!["?"; T::INSERT_FIELDS.len()].join(", ")
-            ));
+            sentence.push_str(&row_placeholders);
+
+            // Same statement for every item: prepare it once.
+            let mut stmt = tx
+                .prepare_cached(&sentence)
+                .map_err(DatabaseError::Insert)?;
 
             let mut inserted = 0;
             for item in &mut self.items {
                 let values = T::get_insert_values(item);
-                Self::log_query_start(&sentence, &values);
-                let item_inserted = tx
-                    .execute(&sentence, params_from_iter(values.iter()))
+                log_query_start(&sentence, &values);
+                let item_inserted = stmt
+                    .execute(params_from_iter(values.iter()))
                     .map_err(DatabaseError::Insert)?;
-                Self::log_query_ending(item_inserted, "Inserted");
+                log_query_ending(item_inserted, "Inserted");
                 if item_inserted > 0 {
                     let aid = tx.last_insert_rowid();
                     debug!("Asigned autoincrement value {}", aid);
@@ -100,25 +112,25 @@ where
 
             Ok(inserted)
         } else {
-            sentence.push_str(
-                &vec![
-                    format!("({})", vec!["?"; T::INSERT_FIELDS.len()].join(", "));
-                    self.items.len()
-                ]
-                .join(", "),
-            );
+            for i in 0..self.items.len() {
+                if i > 0 {
+                    sentence.push_str(", ");
+                }
+                sentence.push_str(&row_placeholders);
+            }
 
-            let values = self
-                .items
-                .iter()
-                .flat_map(|item| T::get_insert_values(item).into_iter())
-                .collect::<Vec<Value>>();
+            let mut values: Vec<Value> =
+                Vec::with_capacity(self.items.len() * T::INSERT_FIELDS.len());
+            for item in &self.items {
+                values.extend(T::get_insert_values(item));
+            }
 
-            Self::log_query_start(&sentence, &values);
+            log_query_start(&sentence, &values);
             let inserted = tx
-                .execute(&sentence, params_from_iter(values.iter()))
+                .prepare_cached(&sentence)
+                .and_then(|mut stmt| stmt.execute(params_from_iter(values.iter())))
                 .map_err(DatabaseError::Insert)?;
-            Self::log_query_ending(inserted, "Inserted");
+            log_query_ending(inserted, "Inserted");
 
             Ok(inserted)
         }

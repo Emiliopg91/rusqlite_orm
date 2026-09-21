@@ -4,7 +4,7 @@ use crate::database::DatabasePool;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
-    builders::QueryBuilder,
+    builders::{QueryBuilder, log_query_ending, log_query_start},
     dao::Entity,
     errors::DatabaseError,
     types::{value::Value, where_clause::Where},
@@ -47,19 +47,21 @@ where
     }
 
     pub fn execute_in(&self, tx: &crate::rusqlite::Transaction) -> crate::errors::Result<usize> {
-        let mut sentence = format!("DELETE FROM '{}'.'{}' ", T::SCHEMA, T::TABLE_NAME);
+        let mut sentence = format!("DELETE FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
 
-        let mut params: Vec<Value> = Vec::new();
+        let mut params: Vec<&Value> = Vec::new();
         if let Some(cond) = &self.condition {
-            sentence.push_str(&format!("WHERE {}", cond.to_sql()));
-            params = cond.clone().into_params();
+            sentence.push_str(" WHERE ");
+            cond.write_sql(&mut sentence);
+            cond.push_params(&mut params);
         }
 
-        Self::log_query_start(&sentence, &params);
+        log_query_start(&sentence, params.iter().copied());
         let deleted = tx
-            .execute(&sentence, params_from_iter(params))
+            .prepare_cached(&sentence)
+            .and_then(|mut stmt| stmt.execute(params_from_iter(params.iter().copied())))
             .map_err(DatabaseError::Delete)?;
-        Self::log_query_ending(deleted, "Deleted");
+        log_query_ending(deleted, "Deleted");
 
         Ok(deleted)
     }

@@ -15,6 +15,7 @@ pub struct DdlVersion {
     pub version: u16,
     pub description: &'static str,
     pub sql: &'static str,
+    pub update_fn: Option<fn(&mut Transaction) -> Result<()>>,
 }
 
 pub struct DatabasePool {
@@ -56,7 +57,7 @@ impl DatabasePool {
         let updated = self.run_in_transaction(|tx| {
             let current_version: u16 = tx
                 .pragma_query_value(None, "user_version", |r| r.get(0))
-                .map_err(DatabaseError::SchemaCreation)?;
+                .map_err(|e| DatabaseError::SchemaCreation(Box::new(e)))?;
 
             let updates: Vec<DdlVersion> = ddls
                 .iter()
@@ -70,12 +71,16 @@ impl DatabasePool {
                     update.version, update.description
                 );
                 tx.execute_batch(update.sql)
-                    .map_err(DatabaseError::SchemaCreation)?;
+                    .map_err(|e| DatabaseError::SchemaCreation(Box::new(e)))?;
+                if let Some(update_fn) = update.update_fn {
+                    debug!("Running update function...");
+                    update_fn(tx).map_err(|e| DatabaseError::SchemaCreation(Box::new(e)))?;
+                }
             }
 
             if let Some(max_version) = updates.iter().map(|u| u.version).max() {
                 tx.pragma_update(None, "user_version", max_version)
-                    .map_err(DatabaseError::SchemaCreation)?;
+                    .map_err(|e| DatabaseError::SchemaCreation(Box::new(e)))?;
                 debug!("Database updated succesfully");
             }
 
@@ -89,7 +94,7 @@ impl DatabasePool {
         debug!("Schema updated, running VACUUM to reclaim space...");
         self.connection()?
             .execute("VACUUM", [])
-            .map_err(DatabaseError::SchemaCreation)?;
+            .map_err(|e| DatabaseError::SchemaCreation(Box::new(e)))?;
 
         Ok(())
     }

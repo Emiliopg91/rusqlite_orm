@@ -2,7 +2,7 @@ use crate::database::DatabasePool;
 use crate::rusqlite::params_from_iter;
 
 use crate::{
-    builders::QueryBuilder,
+    builders::{QueryBuilder, log_query_ending, log_query_start},
     dao::Entity,
     errors::DatabaseError,
     types::{column_name::ColumnName, value::Value, where_clause::Where},
@@ -53,34 +53,27 @@ where
 
     pub fn execute_in(&self, tx: &crate::rusqlite::Transaction) -> crate::errors::Result<usize> {
         let mut sentence = format!("UPDATE '{}'.'{}' SET ", T::SCHEMA, T::TABLE_NAME);
-        sentence.push_str(
-            &self
-                .field_values
-                .iter()
-                .map(|(f, _)| format!("{}=?", f))
-                .collect::<Vec<String>>()
-                .join(", "),
-        );
-
-        let mut cond_params: Vec<Value> = Vec::new();
-        if let Some(cond) = &self.condition {
-            sentence.push_str(&format!(" WHERE {}", cond.to_sql()));
-            cond_params = <Where<T> as Clone>::clone(cond).into_params();
+        for (i, (field, _)) in self.field_values.iter().enumerate() {
+            if i > 0 {
+                sentence.push_str(", ");
+            }
+            sentence.push_str(field.as_ref());
+            sentence.push_str("=?");
         }
 
-        let mut params = self
-            .field_values
-            .iter()
-            .map(|(_, v)| v)
-            .cloned()
-            .collect::<Vec<Value>>();
-        params.extend(cond_params);
+        let mut params: Vec<&Value> = self.field_values.iter().map(|(_, v)| v).collect();
+        if let Some(cond) = &self.condition {
+            sentence.push_str(" WHERE ");
+            cond.write_sql(&mut sentence);
+            cond.push_params(&mut params);
+        }
 
-        Self::log_query_start(&sentence, &params);
+        log_query_start(&sentence, params.iter().copied());
         let updated = tx
-            .execute(&sentence, params_from_iter(params))
+            .prepare_cached(&sentence)
+            .and_then(|mut stmt| stmt.execute(params_from_iter(params.iter().copied())))
             .map_err(DatabaseError::Update)?;
-        Self::log_query_ending(updated, "Updated");
+        log_query_ending(updated, "Updated");
 
         Ok(updated)
     }

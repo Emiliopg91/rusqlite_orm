@@ -3,34 +3,40 @@ pub mod insert;
 pub mod select;
 pub mod update;
 
-use log::debug;
+use log::{Level, debug, log_enabled};
 
 use super::types::value::Value;
 
 pub trait QueryBuilder<T> {
     fn new() -> Self;
-
-    fn log_query_start(sql: &str, params: &[Value]) {
-        log_query_start(sql, params);
-    }
-
-    fn log_query_ending(rows: usize, action: &str) {
-        log_query_ending(rows, action);
-    }
 }
 
-pub(crate) fn log_query_start(sql: &str, params: &[Value]) {
-    let mut sentence = sql.to_string();
-    for param in params {
-        let mut sql_str = param.to_sql_str();
-        sql_str = match param {
-            Value::Text(_) => format!("'{}'", sql_str),
-            _ => sql_str,
-        };
-        sentence = sentence.replacen("?", &sql_str, 1);
+/// Logs the statement with its parameters interpolated. The interpolation is skipped
+/// entirely when `debug` logging is disabled, since it is O(statement + params).
+pub(crate) fn log_query_start<'a>(sql: &str, params: impl IntoIterator<Item = &'a Value>) {
+    if !log_enabled!(Level::Debug) {
+        return;
     }
 
-    debug!("Running statement \"{}\"", sentence,);
+    let mut params = params.into_iter();
+    let mut sentence = String::with_capacity(sql.len());
+    for ch in sql.chars() {
+        if ch != '?' {
+            sentence.push(ch);
+            continue;
+        }
+        match params.next() {
+            Some(Value::Text(text)) => {
+                sentence.push('\'');
+                sentence.push_str(text);
+                sentence.push('\'');
+            }
+            Some(param) => sentence.push_str(&param.to_sql_str()),
+            None => sentence.push('?'),
+        }
+    }
+
+    debug!("Running statement \"{}\"", sentence);
 }
 
 pub(crate) fn log_query_ending(rows: usize, action: &str) {
