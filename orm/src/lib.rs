@@ -6,4 +6,4 @@ pub mod errors;
 pub mod types;
 
 #[cfg(feature = "derive")]
-pub use rusqlite_orm_macros::{Entity, dlls};
+pub use rusqlite_orm_macros::{Entity, ddls};

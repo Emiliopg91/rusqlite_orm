@@ -16,9 +16,9 @@ use crate::{
 };
 
 #[derive(Clone, Copy)]
-pub struct Mappeable;
+pub struct Mappable;
 
-pub struct NonMappeable<T>
+pub struct NonMappable<T>
 where
     T: Entity,
 {
@@ -26,7 +26,7 @@ where
     distinct: bool,
 }
 
-impl<T> Clone for NonMappeable<T>
+impl<T> Clone for NonMappable<T>
 where
     T: Entity,
 {
@@ -39,7 +39,7 @@ where
 }
 
 /// What a select projects and how each result row is turned into a value:
-/// [`Mappeable`] selects every column and maps rows to the entity, [`NonMappeable`]
+/// [`Mappable`] selects every column and maps rows to the entity, [`NonMappable`]
 /// selects the given columns and returns raw [`Row`]s.
 pub trait ColumnsOf<T>
 where
@@ -56,7 +56,7 @@ where
     ) -> Result<Vec<Self::Output>, crate::rusqlite::Error>;
 }
 
-impl<T> ColumnsOf<T> for Mappeable
+impl<T> ColumnsOf<T> for Mappable
 where
     T: Entity,
 {
@@ -76,7 +76,7 @@ where
     }
 }
 
-impl<T> ColumnsOf<T> for NonMappeable<T>
+impl<T> ColumnsOf<T> for NonMappable<T>
 where
     T: Entity,
 {
@@ -102,7 +102,7 @@ where
     }
 }
 
-pub struct SelectBuilder<T, K = Mappeable>
+pub struct SelectBuilder<T, K = Mappable>
 where
     T: Entity,
 {
@@ -131,13 +131,13 @@ where
     }
 }
 
-impl<T> QueryBuilder<T> for SelectBuilder<T, Mappeable>
+impl<T> QueryBuilder<T> for SelectBuilder<T, Mappable>
 where
     T: Entity,
 {
     fn new() -> Self {
         Self {
-            kind: Mappeable,
+            kind: Mappable,
             condition: None,
             order: Vec::new(),
             limit: None,
@@ -278,7 +278,7 @@ where
     }
 }
 
-impl<T> SelectBuilder<T, NonMappeable<T>>
+impl<T> SelectBuilder<T, NonMappable<T>>
 where
     T: Entity,
 {
@@ -294,15 +294,15 @@ where
     }
 }
 
-impl<T> SelectBuilder<T, Mappeable>
+impl<T> SelectBuilder<T, Mappable>
 where
     T: Entity,
 {
-    pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappeable<T>> {
+    pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappable<T>> {
         self.into_non_mappeable(fields, true)
     }
 
-    pub fn columns(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappeable<T>> {
+    pub fn columns(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappable<T>> {
         self.into_non_mappeable(fields, false)
     }
 
@@ -310,9 +310,9 @@ where
         self,
         fields: &[ColumnName<T>],
         distinct: bool,
-    ) -> SelectBuilder<T, NonMappeable<T>> {
+    ) -> SelectBuilder<T, NonMappable<T>> {
         SelectBuilder {
-            kind: NonMappeable {
+            kind: NonMappable {
                 columns: fields.to_vec(),
                 distinct,
             },

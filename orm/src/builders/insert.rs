@@ -4,7 +4,7 @@ use std::marker::PhantomData;
 use log::debug;
 
 use crate::database::DatabasePool;
-use crate::rusqlite::params_from_iter;
+use crate::rusqlite::{limits::Limit, params_from_iter};
 
 use crate::{
     builders::{QueryBuilder, log_query_ending, log_query_start},
@@ -112,27 +112,52 @@ where
 
             Ok(inserted)
         } else {
-            for i in 0..self.items.len() {
-                if i > 0 {
-                    sentence.push_str(", ");
+            // A single statement can bind at most SQLITE_LIMIT_VARIABLE_NUMBER
+            // parameters, so large batches are split into several multi-row INSERTs
+            // (all inside the caller's transaction, hence still atomic).
+            let rows_per_statement = max_rows_per_statement(tx, T::INSERT_FIELDS.len());
+
+            let mut inserted = 0;
+            for chunk in self.items.chunks(rows_per_statement) {
+                let mut chunk_sentence = sentence.clone();
+                for i in 0..chunk.len() {
+                    if i > 0 {
+                        chunk_sentence.push_str(", ");
+                    }
+                    chunk_sentence.push_str(&row_placeholders);
                 }
-                sentence.push_str(&row_placeholders);
-            }
 
-            let mut values: Vec<Value> =
-                Vec::with_capacity(self.items.len() * T::INSERT_FIELDS.len());
-            for item in &self.items {
-                values.extend(T::get_insert_values(item));
-            }
+                let mut values: Vec<Value> =
+                    Vec::with_capacity(chunk.len() * T::INSERT_FIELDS.len());
+                for item in chunk {
+                    values.extend(T::get_insert_values(item));
+                }
 
-            log_query_start(&sentence, &values);
-            let inserted = tx
-                .prepare_cached(&sentence)
-                .and_then(|mut stmt| stmt.execute(params_from_iter(values.iter())))
-                .map_err(DatabaseError::Insert)?;
+                log_query_start(&chunk_sentence, &values);
+                inserted += tx
+                    .prepare_cached(&chunk_sentence)
+                    .and_then(|mut stmt| stmt.execute(params_from_iter(values.iter())))
+                    .map_err(DatabaseError::Insert)?;
+            }
             log_query_ending(inserted, "Inserted");
 
             Ok(inserted)
         }
     }
+}
+
+/// SQLite's default `SQLITE_MAX_VARIABLE_NUMBER` before 3.32, the lowest limit any
+/// build is expected to have; used if the connection can't report its own.
+const FALLBACK_MAX_VARIABLES: usize = 999;
+
+/// How many rows of `columns` bound parameters each fit in one statement.
+fn max_rows_per_statement(conn: &crate::rusqlite::Connection, columns: usize) -> usize {
+    let max_variables = conn
+        .limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)
+        .ok()
+        .and_then(|limit| usize::try_from(limit).ok())
+        .filter(|limit| *limit > 0)
+        .unwrap_or(FALLBACK_MAX_VARIABLES);
+
+    (max_variables / columns.max(1)).max(1)
 }

@@ -4,8 +4,8 @@ mod entity;
 use proc_macro::TokenStream;
 
 #[proc_macro]
-pub fn dlls(input: TokenStream) -> TokenStream {
-    ddls::dlls(input)
+pub fn ddls(input: TokenStream) -> TokenStream {
+    ddls::ddls(input)
 }
 
 #[proc_macro_derive(

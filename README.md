@@ -7,9 +7,9 @@ This repository is a Cargo workspace made up of two crates:
 | Crate                             | Path      | Description                                                                                                                        |
 | --------------------------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | [`rusqlite_orm`](./orm)           | `orm/`    | The runtime ORM: `Entity` trait, `Repository` trait, query builders, `Where`/`OrderBy` types, pooled connections and schema migrations. |
-| [`rusqlite_orm_macros`](./macros) | `macros/` | The `#[derive(Entity)]` procedural macro and the `dlls!` macro used to embed SQL migration files at compile time.                  |
+| [`rusqlite_orm_macros`](./macros) | `macros/` | The `#[derive(Entity)]` procedural macro and the `ddls!` macro used to embed SQL migration files at compile time.                  |
 
-> Both crates are versioned and published together. `rusqlite_orm` re-exports `rusqlite` itself, so you don't need to depend on `rusqlite` directly, and — with its opt-in `derive` feature — it also re-exports the `Entity` derive and the `dlls!` macro, so you don't need to depend on `rusqlite_orm_macros` directly either.
+> Both crates are versioned and published together. `rusqlite_orm` re-exports `rusqlite` itself, so you don't need to depend on `rusqlite` directly, and — with its opt-in `derive` feature — it also re-exports the `Entity` derive and the `ddls!` macro, so you don't need to depend on `rusqlite_orm_macros` directly either.
 
 ## Features
 
@@ -34,9 +34,9 @@ This repository is a Cargo workspace made up of two crates:
 - **Configurable pooled connections** — `DatabaseConnectionBuilder` is a typestate builder: it starts in an in-memory state (single connection, `PRAGMA journal_mode = MEMORY`), and calling `.location(path)` switches it to a file-backed state with its own defaults (pool of 5, `PRAGMA journal_mode = DELETE`). Pool size, min idle connections, connection/busy timeouts, journal mode and `PRAGMA foreign_keys` are all configurable before calling `.build(name)`, which opens an [`r2d2`](https://crates.io/crates/r2d2)-backed pool (via `r2d2_sqlite`) and hands you back an owned `DatabasePool` — there is no global singleton, so you're free to build more than one.
 - **Two ways to run statements** — `DatabasePool::run_in_connection(...)` borrows a pooled connection for one or more statements (not atomic across calls unless you wrap them yourself), and `DatabasePool::run_in_transaction(...)` runs the closure inside a single `rusqlite::Transaction`. Every query builder and generated helper exposes both a "managed" method (`execute`, `fetch_one`, ...) that takes `&DatabasePool` and opens its own pooled connection/transaction, and an `_in` counterpart for composing multiple statements: the read side (`fetch_in`, `fetch_one_in`, `count_in`) takes a `&rusqlite::Connection`, while the write side (`execute_in`, and the generated `update_by_id_in`/`delete_by_id_in`) takes a `&rusqlite::Transaction`, since `Transaction` derefs to `Connection` but not the other way around.
 - **Cached prepared statements** — every statement the builders run (`SELECT`, `COUNT`, `INSERT`, `UPDATE`, `DELETE`) is prepared via `Connection::prepare_cached`, so repeated queries with the same shape reuse the cached statement; an autoincrement multi-item `INSERT` prepares its statement once and reuses it for every item. Statement logging (parameters interpolated into the SQL) is only built when `debug` logging is enabled.
-- **SQL-file schema migrations** — the `dlls!("path")` macro embeds every `<version>_<description>.sql` file found in a directory (relative to the crate manifest) as an array expression of `DdlVersion`s; `DatabasePool::create_schema(&ddls)` applies them in order, tracked via SQLite's `PRAGMA user_version`, and runs `VACUUM` afterwards if anything was applied. Each `DdlVersion` also has an optional `update_fn` hook, run inside the same transaction right after that migration's SQL, for data migrations that plain SQL can't express.
+- **SQL-file schema migrations** — the `ddls!("path")` macro embeds every `<version>_<description>.sql` file found in a directory (relative to the crate manifest) as an array expression of `DdlVersion`s; `DatabasePool::create_schema(&ddls)` applies them in order, tracked via SQLite's `PRAGMA user_version`, and runs `VACUUM` afterwards if anything was applied. Each `DdlVersion` also has an optional `update_fn` hook, run inside the same transaction right after that migration's SQL, for data migrations that plain SQL can't express.
 - **Serializable errors** — `DatabaseError` implements `serde::Serialize` (as its `Display` string), so it can be returned directly from, e.g., a Tauri command.
-- **Optional `derive` feature** — `rusqlite_orm = { version = "0.5", features = ["derive"] }` re-exports `Entity` and `dlls!` from `rusqlite_orm_macros` at the crate root (`use rusqlite_orm::Entity;`, `rusqlite_orm::dlls!(...)`).
+- **Optional `derive` feature** — `rusqlite_orm = { version = "1", features = ["derive"] }` re-exports `Entity` and `ddls!` from `rusqlite_orm_macros` at the crate root (`use rusqlite_orm::Entity;`, `rusqlite_orm::ddls!(...)`).
 - **Query logging** — every generated statement is logged (via the `log` crate) with parameters interpolated, plus the number of affected/fetched rows.
 
 ## Installation
@@ -45,15 +45,15 @@ Enable the `derive` feature, which re-exports the macros from `rusqlite_orm_macr
 
 ```toml
 [dependencies]
-rusqlite_orm = { version = "0.5", features = ["derive"] }
+rusqlite_orm = { version = "1", features = ["derive"] }
 ```
 
 Or, without the feature, depend on both crates explicitly (and import the macros from `rusqlite_orm_macros` instead of `rusqlite_orm`):
 
 ```toml
 [dependencies]
-rusqlite_orm = "0.5"
-rusqlite_orm_macros = "0.5"
+rusqlite_orm = "1"
+rusqlite_orm_macros = "1"
 ```
 
 `rusqlite_orm` re-exports `rusqlite`, accessible as `rusqlite_orm::rusqlite`, so most consumers won't need to add `rusqlite` as a separate dependency.
@@ -108,19 +108,19 @@ CREATE TABLE users (
 );
 ```
 
-Embed them at compile time with the `dlls!` macro, which expands to an **array expression** of `rusqlite_orm::database::DdlVersion` (one entry per file), so you bind it yourself:
+Embed them at compile time with the `ddls!` macro, which expands to an **array expression** of `rusqlite_orm::database::DdlVersion` (one entry per file), so you bind it yourself:
 
 ```rust
-let ddls = rusqlite_orm::dlls!("migrations"); // `rusqlite_orm_macros::dlls!` without the `derive` feature
+let ddls = rusqlite_orm::ddls!("migrations"); // `rusqlite_orm_macros::ddls!` without the `derive` feature
 // expands to: [DdlVersion { version, description, sql, update_fn: None }, ...]
 ```
 
-To keep it around as a global, give it an explicit array type, e.g. `static DDLS: [DdlVersion; 3] = rusqlite_orm::dlls!("migrations");`.
+To keep it around as a global, give it an explicit array type, e.g. `static DDLS: [DdlVersion; 3] = rusqlite_orm::ddls!("migrations");`.
 
 Every entry starts with `update_fn: None`. `DdlVersion::update_fn` is an `Option<fn(&mut rusqlite::Transaction) -> rusqlite_orm::errors::Result<()>>`; set it on any migration that needs Rust code (e.g. recomputing a derived column) to have it run in the same transaction, right after that migration's SQL:
 
 ```rust
-let mut ddls = rusqlite_orm::dlls!("migrations");
+let mut ddls = rusqlite_orm::ddls!("migrations");
 for ddl in &mut ddls {
     if ddl.version == 5 {
         ddl.update_fn = Some(recalculate_derived_columns);
@@ -196,7 +196,7 @@ UserRepository::update()
 user.delete_by_id(&db)?;
 ```
 
-`InsertBuilder::or_ignore()` / `or_replace()` take no arguments — call the one you want to turn `INSERT` into `INSERT OR IGNORE` / `INSERT OR REPLACE`; calling neither keeps a plain `INSERT`.
+`InsertBuilder::or_ignore()` / `or_replace()` take no arguments — call the one you want to turn `INSERT` into `INSERT OR IGNORE` / `INSERT OR REPLACE`; calling neither keeps a plain `INSERT`. Inserting several items at once uses multi-row `INSERT` statements, split automatically into batches that respect the connection's `SQLITE_LIMIT_VARIABLE_NUMBER` (so any number of items works); all batches run in the same transaction, so a failure in any of them rolls back the whole insert. Entities with an `#[autoincrement]` field are inserted one row at a time (to read back each `rowid`), reusing a single prepared statement.
 
 ### 5. Composing statements in a single transaction
 

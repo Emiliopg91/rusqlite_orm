@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{LitStr, parse_macro_input};
 
-pub fn dlls(input: TokenStream) -> TokenStream {
+pub fn ddls(input: TokenStream) -> TokenStream {
     let lit = parse_macro_input!(input as LitStr);
 
     let manifest_dir = match std::env::var("CARGO_MANIFEST_DIR") {

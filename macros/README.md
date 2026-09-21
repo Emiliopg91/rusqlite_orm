@@ -2,10 +2,10 @@
 
 Procedural macros for [`rusqlite_orm`](../orm). This crate is meant to be used together with `rusqlite_orm`, not on its own.
 
-You normally don't need to depend on it directly: enabling the `derive` feature of `rusqlite_orm` re-exports both macros at its crate root (`rusqlite_orm::Entity`, `rusqlite_orm::dlls!`). The examples below use the derive-feature import paths; without the feature, import them from `rusqlite_orm_macros` instead.
+You normally don't need to depend on it directly: enabling the `derive` feature of `rusqlite_orm` re-exports both macros at its crate root (`rusqlite_orm::Entity`, `rusqlite_orm::ddls!`). The examples below use the derive-feature import paths; without the feature, import them from `rusqlite_orm_macros` instead.
 
 ```toml
-rusqlite_orm = { version = "0.5", features = ["derive"] }
+rusqlite_orm = { version = "1", features = ["derive"] }
 ```
 
 It provides two macros:
@@ -115,7 +115,7 @@ For `#[unique("tenant_username", (tenant_id, username))]`, the macro generates o
 
 For `#[index("last_name", (last_name))]`, the equivalent non-unique set is generated with an extra `order_by` parameter and `count_by_last_name(db, ...)`/`count_by_last_name_in(conn, ...)` returning `i64` instead of `exists_by_*`/`bool`.
 
-The `#[unique(...)]` attribute only generates lookup functions based on the assumption that the column group is unique; it does **not** create a `UNIQUE` constraint in the database schema itself — that still has to be declared in your DDL (see [`dlls!(path)`](#dllspath) below).
+The `#[unique(...)]` attribute only generates lookup functions based on the assumption that the column group is unique; it does **not** create a `UNIQUE` constraint in the database schema itself — that still has to be declared in your DDL (see [`ddls!(path)`](#ddlspath) below).
 
 ## Default and autoincrement columns
 
@@ -215,22 +215,22 @@ post.fetch_comments_relationship(&db)?;
 println!("{:?} has {} comments", post.author, post.comments.len());
 ```
 
-## `dlls!(path)`
+## `ddls!(path)`
 
 Reads every `<version>_<name>.sql` file in the given directory (resolved relative to `CARGO_MANIFEST_DIR`) at compile time and expands to an **array expression** with one `rusqlite_orm::database::DdlVersion` per file — it does not declare any item, so you bind it yourself:
 
 ```rust
-let ddls = rusqlite_orm::dlls!("migrations");
+let ddls = rusqlite_orm::ddls!("migrations");
 // [DdlVersion { version, description, sql, update_fn: None }, ...]
 
 // or, as a global (the length must be spelled out):
-static DDLS: [rusqlite_orm::database::DdlVersion; 3] = rusqlite_orm::dlls!("migrations");
+static DDLS: [rusqlite_orm::database::DdlVersion; 3] = rusqlite_orm::ddls!("migrations");
 ```
 
 Every entry is generated with `update_fn: None`. `DdlVersion::update_fn` is an `Option<fn(&mut rusqlite::Transaction) -> rusqlite_orm::errors::Result<()>>` that `create_schema` runs inside the same transaction, right after that migration's SQL; bind the array with `let mut` to assign one where a migration needs Rust code:
 
 ```rust
-let mut ddls = rusqlite_orm::dlls!("migrations");
+let mut ddls = rusqlite_orm::ddls!("migrations");
 for ddl in &mut ddls {
     if ddl.version == 5 {
         ddl.update_fn = Some(recalculate_derived_columns);
