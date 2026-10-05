@@ -91,9 +91,14 @@ impl DatabasePool {
             return Ok(());
         }
 
+        let conn = self.connection()?;
+
         debug!("Schema updated, running VACUUM to reclaim space...");
-        self.connection()?
-            .execute("VACUUM", [])
+        conn.execute("VACUUM", [])
+            .map_err(|e| DatabaseError::SchemaCreation(Box::new(e)))?;
+
+        debug!("Running ANALYZE to refresh planner statistics...");
+        conn.execute_batch("ANALYZE;")
             .map_err(|e| DatabaseError::SchemaCreation(Box::new(e)))?;
 
         Ok(())
