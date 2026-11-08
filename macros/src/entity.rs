@@ -877,34 +877,34 @@ fn build_primary_key_impl(
     quote! {
             #[doc = "Update row by primary key"]
             pub fn update_by_id(&self,db: &rusqlite_orm::database::DatabasePool, ) -> rusqlite_orm::errors::Result<()> {
-                db.run_in_transaction(|tx| {
-                    let res = self.update_by_id_in(tx)?;
+                db.run_in_connection(|conn| {
+                    let res = self.update_by_id_in(conn)?;
                     Ok(res)
                 })
             }
 
             #[doc = "Update row by primary key in connection"]
-            pub fn update_by_id_in(&self, tx: &rusqlite_orm::rusqlite::Transaction) -> rusqlite_orm::errors::Result<()> {
+            pub fn update_by_id_in(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()> {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::update()
                     #(#update_sets)*
                     .where_(#update_delete_condition)
-                    .execute_in(tx)?;
+                    .execute_in(conn)?;
                 Ok(())
             }
 
             #[doc = "Delete row by primary key"]
             pub fn delete_by_id(&self, db: &rusqlite_orm::database::DatabasePool) -> rusqlite_orm::errors::Result<()> {
-                db.run_in_transaction(|tx| {
-                    let res = self.delete_by_id_in(tx)?;
+                db.run_in_connection(|conn| {
+                    let res = self.delete_by_id_in(conn)?;
                     Ok(res)
                 })
             }
 
             #[doc = "Delete row by primary key in connection"]
-            pub fn delete_by_id_in(&self, tx: &rusqlite_orm::rusqlite::Transaction) -> rusqlite_orm::errors::Result<()> {
+            pub fn delete_by_id_in(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()> {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::delete()
                     .where_(#update_delete_condition)
-                    .execute_in(tx)?;
+                    .execute_in(conn)?;
                 Ok(())
             }
     }

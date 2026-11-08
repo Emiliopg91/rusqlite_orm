@@ -39,14 +39,16 @@ where
         self
     }
 
+    /// Runs on a pooled connection: a single statement is atomic on its own.
     pub fn execute(&self, db: &DatabasePool) -> crate::errors::Result<usize> {
-        db.run_in_transaction(|tx| {
-            let res = self.execute_in(tx)?;
+        db.run_in_connection(|conn| {
+            let res = self.execute_in(conn)?;
             Ok(res)
         })
     }
 
-    pub fn execute_in(&self, tx: &crate::rusqlite::Transaction) -> crate::errors::Result<usize> {
+    /// Runs on the given connection, which may be a `Transaction` through `Deref`.
+    pub fn execute_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<usize> {
         let mut sentence = format!("DELETE FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
 
         let mut params: Vec<&Value> = Vec::new();
@@ -57,7 +59,7 @@ where
         }
 
         log_query_start(&sentence, params.iter().copied());
-        let deleted = tx
+        let deleted = conn
             .prepare_cached(&sentence)
             .and_then(|mut stmt| stmt.execute(params_from_iter(params.iter().copied())))
             .map_err(DatabaseError::Delete)?;

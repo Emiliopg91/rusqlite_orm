@@ -10,8 +10,13 @@ use crate::{
     dao::Entity,
     errors::DatabaseError,
     types::{
-        column_name::{ColumnName, write_column_list}, order_by::OrderBy, row::Row, row::Rows, subquery::Subquery,
-        value::Value, where_clause::Where,
+        column_name::{ColumnName, write_column_list},
+        order_by::OrderBy,
+        row::Row,
+        row::Rows,
+        subquery::Subquery,
+        value::Value,
+        where_clause::Where,
     },
 };
 
@@ -239,6 +244,13 @@ where
         conn: &crate::rusqlite::Connection,
     ) -> crate::errors::Result<Vec<K::Output>> {
         self.fetch_limited(conn, self.limit)
+    }
+
+    pub fn fetch(&self, db: &DatabasePool) -> crate::errors::Result<Vec<K::Output>> {
+        db.run_in_connection(|conn| {
+            let res = self.fetch_in(conn)?;
+            Ok(res)
+        })
     }
 
     /// First matching row, if any. Runs with `LIMIT 1` so SQLite stops after one row.

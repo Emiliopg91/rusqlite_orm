@@ -50,16 +50,30 @@ where
         self
     }
 
+    /// A single item runs on a pooled connection; several run inside a transaction, as they
+    /// may take more than one statement and must be inserted all or none.
     pub fn execute(&mut self, db: &DatabasePool) -> crate::errors::Result<usize> {
-        db.run_in_transaction(|tx| {
-            let res = self.execute_in(tx)?;
-            Ok(res)
-        })
+        if self.items.len() <= 1 {
+            db.run_in_connection(|conn| {
+                let res = self.execute_in(conn)?;
+                Ok(res)
+            })
+        } else {
+            db.run_in_transaction(|tx| {
+                let res = self.execute_in(tx)?;
+                Ok(res)
+            })
+        }
     }
 
+    /// Runs on the given connection, which may be a `Transaction` through `Deref`.
+    ///
+    /// Several items may take more than one statement (one per item with an autoincrement
+    /// field, or one per batch of `SQLITE_LIMIT_VARIABLE_NUMBER` parameters otherwise), so they
+    /// are only inserted atomically when `conn` is a transaction.
     pub fn execute_in(
         &mut self,
-        tx: &crate::rusqlite::Transaction,
+        conn: &crate::rusqlite::Connection,
     ) -> crate::errors::Result<usize> {
         if self.items.is_empty() {
             return Ok(0);
@@ -90,7 +104,7 @@ where
             sentence.push_str(&row_placeholders);
 
             // Same statement for every item: prepare it once.
-            let mut stmt = tx
+            let mut stmt = conn
                 .prepare_cached(&sentence)
                 .map_err(DatabaseError::Insert)?;
 
@@ -103,7 +117,7 @@ where
                     .map_err(DatabaseError::Insert)?;
                 log_query_ending(item_inserted, "Inserted");
                 if item_inserted > 0 {
-                    let aid = tx.last_insert_rowid();
+                    let aid = conn.last_insert_rowid();
                     debug!("Asigned autoincrement value {}", aid);
                     item.set_autoincrement_id(aid);
                 }
@@ -114,8 +128,8 @@ where
         } else {
             // A single statement can bind at most SQLITE_LIMIT_VARIABLE_NUMBER
             // parameters, so large batches are split into several multi-row INSERTs
-            // (all inside the caller's transaction, hence still atomic).
-            let rows_per_statement = max_rows_per_statement(tx, T::INSERT_FIELDS.len());
+            // (atomic only when the caller runs them inside a transaction).
+            let rows_per_statement = max_rows_per_statement(conn, T::INSERT_FIELDS.len());
 
             let mut inserted = 0;
             for chunk in self.items.chunks(rows_per_statement) {
@@ -134,7 +148,7 @@ where
                 }
 
                 log_query_start(&chunk_sentence, &values);
-                inserted += tx
+                inserted += conn
                     .prepare_cached(&chunk_sentence)
                     .and_then(|mut stmt| stmt.execute(params_from_iter(values.iter())))
                     .map_err(DatabaseError::Insert)?;

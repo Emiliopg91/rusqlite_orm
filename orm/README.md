@@ -10,8 +10,8 @@ The runtime crate of the [`rusqlite_orm`](../README.md) workspace: a lightweight
 - **A generated `Repository`** — every `#[derive(Entity)]` struct gets a companion `<Struct>Repository` unit struct implementing `rusqlite_orm::dao::Repository<Struct>`, which is where the query builders and generated lookups (`select_by_id`, `exists`, index helpers, ...) live.
 - **Typed query builders** — `select()`, `insert()`, `update()`, `delete()` builders with a fluent API, called on the generated `<Struct>Repository`.
 - **Rich `WHERE` clauses** — `Eq`, `NotEq`, `Gt`, `Gte`, `Lt`, `Lte`, `In`, `InMultiple` (tuple `IN`), `Null`, `NotNull`, combinable with `And` / `Or`, plus subquery variants (`EqSub`, `NotEqSub`, `InSub`, `NotInSub`, `InMultipleSub`) that embed another `SelectBuilder` (via `.to_subquery()`) inside the condition. Any comparison value can also be `Value::Raw(sql)` to splice a SQL expression (e.g. a SQLite function call like `CURRENT_TIMESTAMP`) in place of a bound parameter.
-- **Ordering, limits & pagination** — `OrderBy::Asc` / `OrderBy::Desc`, `.limit(n)` and `.offset(n)`. `SelectBuilder` is `Clone` (when its kind is), and `fetch_one`/`fetch_one_in` run the query with `LIMIT 1` (the builder itself is left untouched) instead of fetching every matching row and discarding all but the first.
-- **Raw / non-mapped selects** — calling `.columns(&[...])` or `.distinct(&[...])` on `select()` switches it from returning `Vec<Entity>` to returning `Row`/`Rows` (a simple column-name → `Value` map), for projections that don't need to cover every persisted column.
+- **Ordering, limits & pagination** — `OrderBy::Asc` / `OrderBy::Desc`, `.limit(n)` and `.offset(n)`. `SelectBuilder` is `Clone` (when its kind is); `fetch`/`fetch_in` return every matching row, while `fetch_one`/`fetch_one_in` run the query with `LIMIT 1` (the builder itself is left untouched) instead of fetching every matching row and discarding all but the first.
+- **Raw / non-mapped selects** — calling `.columns(&[...])` or `.distinct(&[...])` on `select()` switches it from returning `Vec<Entity>` to returning `Row`/`Rows` (a simple column-name → `Value` map), for projections that don't need to cover every persisted column. `Row` has typed getters (`get_int`, `get_u16`, `get_f64`, `get_bool`, `get_text`, `get_blob`, ... each with a `_nullable` variant), see [Reading non-mapped rows](#reading-non-mapped-rows).
 - **Generated convenience methods** for entities with a struct-level `#[primary_key(field_a, field_b, ...)]` attribute:
   - on the **repository**: `exists`, `select_by_id` (and `_in` variants);
   - on the **entity instance** itself: `update_by_id`, `delete_by_id` (and `_in` variants).
@@ -25,7 +25,7 @@ The runtime crate of the [`rusqlite_orm`](../README.md) workspace: a lightweight
 - **Multiple SQLite schemas** — `#[entity(schema = "...")]` attaches an entity to a schema other than `"main"` (e.g. an `ATTACH`ed database); every generated statement is qualified as `<schema>.<table>`.
 - **Wide column type support** — the `Value` enum (`rusqlite_orm::types::value::Value`) covers every signed/unsigned integer width (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`), `f32`/`f64`, `bool`, `String`, `Vec<u8>` (BLOB, hex-encoded when logged) and `Option<T>` (mapped to `NULL`/the inner value), plus a `Value::Raw(String)` variant for SQL literals/function calls that must not be bound as a parameter (see the `WHERE` clause reference below).
 - **Configurable pooled connections** — `DatabaseConnectionBuilder` is a typestate builder: it starts in an in-memory state (single connection, `PRAGMA journal_mode = MEMORY`), and calling `.location(path)` switches it to a file-backed state with its own defaults (pool of 5, `PRAGMA journal_mode = DELETE`). Pool size, min idle connections, connection/busy timeouts, journal mode and `PRAGMA foreign_keys` are all configurable before calling `.build(name)`, which opens an [`r2d2`](https://crates.io/crates/r2d2)-backed pool (via `r2d2_sqlite`) and hands you back an owned `DatabasePool` — there is no global singleton, so you're free to build more than one.
-- **Two ways to run statements** — `DatabasePool::run_in_connection(...)` borrows a pooled connection for one or more statements (not atomic across calls unless you wrap them yourself), and `DatabasePool::run_in_transaction(...)` runs the closure inside a single `rusqlite::Transaction`. Every query builder and generated helper exposes both a "managed" method (`execute`, `fetch_one`, ...) that takes `&DatabasePool` and opens its own pooled connection/transaction, and a connection-taking counterpart for composing multiple statements: the read side (`fetch_in`, `fetch_one_in`, `count_in`, and the primary-key/index `select_*`/`exists*`/`count_*` helpers) takes a `&rusqlite::Connection`, while the write side (`execute_in`, and the generated `update_by_id_in`/`delete_by_id_in`) takes a `&rusqlite::Transaction`, since `Transaction` derefs to `Connection` but not the other way around.
+- **Two ways to run statements** — `DatabasePool::run_in_connection(...)` borrows a pooled connection for one or more statements (not atomic across calls unless you wrap them yourself), and `DatabasePool::run_in_transaction(...)` runs the closure inside a single `rusqlite::Transaction`. Every query builder and generated helper exposes both a "managed" method (`execute`, `fetch_one`, ...) that takes `&DatabasePool` and opens its own pooled connection/transaction, and a connection-taking counterpart for composing multiple statements: the read side (`fetch_in`, `fetch_one_in`, `count_in`, and the primary-key/index `select_*`/`exists*`/`count_*` helpers) takes a `&rusqlite::Connection`, and so does the write side (`execute_in`, and the generated `update_by_id_in`/`delete_by_id_in`); a `Transaction` can be passed anywhere, since it derefs to `Connection`. The managed write methods only open a transaction when it buys atomicity: `update`/`delete` `execute`, `update_by_id` and `delete_by_id` are a single statement and run on a plain pooled connection, while `InsertBuilder::execute` uses a transaction only for more than one item (which may take several statements).
 - **Cached prepared statements** — every statement the builders run (`SELECT`, `COUNT`, `INSERT`, `UPDATE`, `DELETE`) is prepared via `Connection::prepare_cached`, so repeated queries with the same shape reuse the cached statement; an autoincrement multi-item `INSERT` prepares its statement once and reuses it for every item. Statement logging (parameters interpolated into the SQL) is only built when `debug` logging is enabled.
 - **SQL-file schema migrations** — the `ddls!("path")` macro embeds every `<version>_<description>.sql` file found in a directory (relative to the crate manifest) as an array expression of `DdlVersion`s; `DatabasePool::create_schema(&ddls)` applies them in order, tracked via SQLite's `PRAGMA user_version`, and runs `VACUUM` afterwards if anything was applied. Each `DdlVersion` also has an optional `update_fn` hook, run inside the same transaction right after that migration's SQL, for data migrations that plain SQL can't express.
 - **Serializable errors** — `DatabaseError` implements `serde::Serialize` (as its `Display` string), so it can be returned directly from, e.g., a Tauri command.
@@ -78,7 +78,7 @@ This expands into:
 
 - an `entity::columns` module with a typed constant per persisted field, named after the **field** (not the `#[column(...)]` override) in upper case — `entity::columns::ID`, `entity::columns::EMAIL` (the field is `email`, even though its SQL column is `email_address`), `entity::columns::NAME` — plus `entity::TABLE` and `entity::SCHEMA`,
 - an implementation of the `Entity` trait for `User` (`SCHEMA`, `TABLE_NAME`, `FIELDS`, `INSERT_FIELDS`, `AUTOINCREMENT_FIELD`, `map_from_row`, `get_insert_values`),
-- `user.update_by_id(&db)` / `user.delete_by_id(&db)` **instance methods** on `User` (because the struct has a `#[primary_key(id)]` attribute), each with an `_in` counterpart taking a `&rusqlite::Transaction`,
+- `user.update_by_id(&db)` / `user.delete_by_id(&db)` **instance methods** on `User` (because the struct has a `#[primary_key(id)]` attribute), each with an `_in` counterpart taking a `&rusqlite::Connection` (or a `Transaction`, through `Deref`),
 - a `UserRepository` unit struct implementing `rusqlite_orm::dao::Repository<User>`, with:
   - `UserRepository::exists(&db, id)` / `UserRepository::select_by_id(&db, id)` (and `_in` variants),
   - `UserRepository::select_by_email(&db, email, order_by)` and `UserRepository::count_by_email(&db, email)` (because of the `#[index("email", (email))]` attribute), plus their `_in` variants,
@@ -151,7 +151,7 @@ db.create_schema(&ddls)?;
 
 ### 4. CRUD operations
 
-All query builders (`select`, `insert`, `update`, `delete`) and the generated lookup helpers live on the `<Struct>Repository` type generated by `#[derive(Entity)]` — in this case, `UserRepository`. Most of them come in a **managed** form (takes `&DatabasePool`, opens its own pooled connection or transaction) and an **`_in`** form (takes an explicit `&rusqlite::Connection`/`&rusqlite::Transaction`, for composing several statements together). `SelectBuilder` is the asymmetric case: it has no managed multi-row `fetch()`, only the managed `fetch_one()`/`count()` (both taking `&DatabasePool`, returning `Option<T>`/`i64`) — fetching more than one row needs `db.run_in_connection(...)` plus the builder's `fetch_in(conn)`.
+All query builders (`select`, `insert`, `update`, `delete`) and the generated lookup helpers live on the `<Struct>Repository` type generated by `#[derive(Entity)]` — in this case, `UserRepository`. Every one of them comes in a **managed** form (takes `&DatabasePool`, opens its own pooled connection — or transaction, for multi-item inserts) and an **`_in`** form (takes an explicit `&rusqlite::Connection`, which may be a `Transaction`, for composing several statements together). On `SelectBuilder` these are `fetch`/`fetch_in` (`Vec<T>`), `fetch_one`/`fetch_one_in` (`Option<T>`) and `count`/`count_in` (`i64`).
 
 ```rust
 use rusqlite_orm::{
@@ -163,15 +163,13 @@ use rusqlite_orm::{
 let mut user = User { id: 0, email: "alice@example.com".into(), name: "Alice".into(), transient_flag: false };
 UserRepository::insert().item(&mut user).or_ignore().execute(&db)?;
 
-// SELECT with WHERE / ORDER BY / LIMIT / OFFSET — needs an explicit connection
-let users = db.run_in_connection(|conn| {
-    Ok(UserRepository::select()
-        .where_(Where::Eq(entity::columns::EMAIL, "alice@example.com".into()))
-        .order_by(OrderBy::Asc(entity::columns::ID))
-        .limit(10)
-        .offset(20)
-        .fetch_in(conn)?)
-})?;
+// SELECT with WHERE / ORDER BY / LIMIT / OFFSET
+let users = UserRepository::select()
+    .where_(Where::Eq(entity::columns::EMAIL, "alice@example.com".into()))
+    .order_by(OrderBy::Asc(entity::columns::ID))
+    .limit(10)
+    .offset(20)
+    .fetch(&db)?;
 
 // Generated helpers (on the repository) — each has a managed form taking `&DatabasePool`
 let by_id = UserRepository::select_by_id(&db, 1)?;
@@ -192,7 +190,36 @@ UserRepository::update()
 user.delete_by_id(&db)?;
 ```
 
-`InsertBuilder::or_ignore()` / `or_replace()` take no arguments — call the one you want to turn `INSERT` into `INSERT OR IGNORE` / `INSERT OR REPLACE`; calling neither keeps a plain `INSERT`. Inserting several items at once uses multi-row `INSERT` statements, split automatically into batches that respect the connection's `SQLITE_LIMIT_VARIABLE_NUMBER` (so any number of items works); all batches run in the same transaction, so a failure in any of them rolls back the whole insert. Entities with an `#[autoincrement]` field are inserted one row at a time (to read back each `rowid`), reusing a single prepared statement.
+`InsertBuilder::or_ignore()` / `or_replace()` take no arguments — call the one you want to turn `INSERT` into `INSERT OR IGNORE` / `INSERT OR REPLACE`; calling neither keeps a plain `INSERT`. Inserting several items at once uses multi-row `INSERT` statements, split automatically into batches that respect the connection's `SQLITE_LIMIT_VARIABLE_NUMBER` (so any number of items works). The managed `execute` runs several items inside a transaction, so a failure in any batch rolls back the whole insert; `execute_in` is only atomic when the connection you pass is a transaction. Entities with an `#[autoincrement]` field are inserted one row at a time (to read back each `rowid`), reusing a single prepared statement.
+
+#### Reading non-mapped rows
+
+A `.columns(...)`/`.distinct(...)` select returns `Row`s. Besides the raw `row.get(column) -> Option<&Value>`, `Row` has typed getters that convert from the values SQLite returns (`Int64`, `Float64`, `Text`, `Blob`):
+
+| Getter | Returns | Accepts |
+| ------ | ------- | ------- |
+| `get_int` | `i64` | integer |
+| `get_i8`, `get_i16`, `get_i32`, `get_isize`, `get_u8`, `get_u16`, `get_u32`, `get_u64`, `get_usize` | that type | integer within the type's range |
+| `get_f64`, `get_f32` | `f64` / `f32` | real or integer |
+| `get_bool` | `bool` | integer (anything but `0` is `true`) |
+| `get_text` | `String` | text |
+| `get_blob` | `Vec<u8>` | blob |
+
+Each getter panics if the column is missing, NULL, of another type or out of range; its `_nullable` counterpart (`get_u16_nullable`, `get_text_nullable`, ...) returns `None` for a missing or NULL column instead, still panicking on another type.
+
+```rust
+let names: Vec<(u32, String)> = UserRepository::select()
+    .columns(&[entity::columns::ID, entity::columns::NAME])
+    .fetch(&db)?
+    .iter()
+    .map(|row| {
+        (
+            row.get_u32(entity::columns::ID.as_ref()),
+            row.get_text(entity::columns::NAME.as_ref()),
+        )
+    })
+    .collect();
+```
 
 ### 5. Composing statements in a single transaction
 
@@ -207,7 +234,7 @@ let fetched = db.run_in_transaction(|tx| {
 })?;
 ```
 
-`run_in_transaction`'s closure receives a `&mut rusqlite::Transaction`, which reborrows as the `&rusqlite::Transaction`/`&rusqlite::Connection` the various `_in` methods expect (`Transaction` derefs to `Connection`), so both read (`fetch_in`, `select_by_id_in`, ...) and write (`execute_in`, `update_by_id_in`, `delete_by_id_in`, ...) calls can be composed here. `run_in_connection`'s closure only gets a plain pooled connection (no transaction), so it can compose reads but not the write-side `_in` methods, which specifically require a `&rusqlite::Transaction`.
+`run_in_transaction`'s closure receives a `&mut rusqlite::Transaction`, which reborrows as the `&rusqlite::Transaction`/`&rusqlite::Connection` the various `_in` methods expect (`Transaction` derefs to `Connection`), so both read (`fetch_in`, `select_by_id_in`, ...) and write (`execute_in`, `update_by_id_in`, `delete_by_id_in`, ...) calls can be composed here, all committed or rolled back together. `run_in_connection`'s closure gets a plain pooled connection (no transaction), which every `_in` method accepts as well, reads and writes alike: use it when the statements don't need to be atomic together, and `run_in_transaction` when they do.
 
 The closure passed to `run_in_transaction` (and `run_in_connection`) returns `std::result::Result<R, Box<dyn std::error::Error + Send + Sync>>` rather than the crate's own `Result<R>`, so it can propagate any error type with `?` (not just `DatabaseError`) — useful when composing connection-taking calls with your own fallible logic inside the same connection/transaction. Any error returned from the closure is wrapped into `DatabaseError::Transaction` (for `run_in_transaction`) or `DatabaseError::RunningOnConnection` (for `run_in_connection`).
 
