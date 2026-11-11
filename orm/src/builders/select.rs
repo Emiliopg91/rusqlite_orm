@@ -215,11 +215,13 @@ where
         Subquery::new(sql, params.into_iter().cloned().collect())
     }
 
-    pub fn count(&self, db: &DatabasePool) -> crate::errors::Result<i64> {
-        db.run_in_connection(|conn| {
-            let res = self.count_in(conn)?;
-            Ok(res)
-        })
+    pub async fn count(&self, db: &DatabasePool) -> crate::errors::Result<i64>
+    where
+        K: Clone + Send + 'static,
+    {
+        let builder = self.clone();
+        db.run_in_connection(move |conn| Ok(builder.count_in(conn)?))
+            .await
     }
 
     pub fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
@@ -246,11 +248,14 @@ where
         self.fetch_limited(conn, self.limit)
     }
 
-    pub fn fetch(&self, db: &DatabasePool) -> crate::errors::Result<Vec<K::Output>> {
-        db.run_in_connection(|conn| {
-            let res = self.fetch_in(conn)?;
-            Ok(res)
-        })
+    pub async fn fetch(&self, db: &DatabasePool) -> crate::errors::Result<Vec<K::Output>>
+    where
+        K: Clone + Send + 'static,
+        K::Output: Send + 'static,
+    {
+        let builder = self.clone();
+        db.run_in_connection(move |conn| Ok(builder.fetch_in(conn)?))
+            .await
     }
 
     /// First matching row, if any. Runs with `LIMIT 1` so SQLite stops after one row.
@@ -262,11 +267,14 @@ where
         Ok(self.fetch_limited(conn, Some(limit))?.into_iter().next())
     }
 
-    pub fn fetch_one(&self, db: &DatabasePool) -> crate::errors::Result<Option<K::Output>> {
-        db.run_in_connection(|conn| {
-            let res = self.fetch_one_in(conn)?;
-            Ok(res)
-        })
+    pub async fn fetch_one(&self, db: &DatabasePool) -> crate::errors::Result<Option<K::Output>>
+    where
+        K: Clone + Send + 'static,
+        K::Output: Send + 'static,
+    {
+        let builder = self.clone();
+        db.run_in_connection(move |conn| Ok(builder.fetch_one_in(conn)?))
+            .await
     }
 
     fn fetch_limited(

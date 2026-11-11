@@ -17,6 +17,19 @@ where
     _marker: std::marker::PhantomData<T>,
 }
 
+impl<T> Clone for UpdateBuilder<T>
+where
+    T: Entity,
+{
+    fn clone(&self) -> Self {
+        Self {
+            condition: self.condition.clone(),
+            field_values: self.field_values.clone(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
 impl<T> QueryBuilder<T> for UpdateBuilder<T>
 where
     T: Entity,
@@ -45,11 +58,10 @@ where
     }
 
     /// Runs on a pooled connection: a single statement is atomic on its own.
-    pub fn execute(&self, db: &DatabasePool) -> crate::errors::Result<usize> {
-        db.run_in_connection(|conn| {
-            let res = self.execute_in(conn)?;
-            Ok(res)
-        })
+    pub async fn execute(&self, db: &DatabasePool) -> crate::errors::Result<usize> {
+        let builder = self.clone();
+        db.run_in_connection(move |conn| Ok(builder.execute_in(conn)?))
+            .await
     }
 
     /// Runs on the given connection, which may be a `Transaction` through `Deref`.

@@ -5,7 +5,7 @@ Procedural macros for [`rusqlite_orm`](../orm). This crate is meant to be used t
 You normally don't need to depend on it directly: enabling the `derive` feature of `rusqlite_orm` re-exports both macros at its crate root (`rusqlite_orm::Entity`, `rusqlite_orm::ddls!`). The examples below use the derive-feature import paths; without the feature, import them from `rusqlite_orm_macros` instead.
 
 ```toml
-rusqlite_orm = { version = "1", features = ["derive"] }
+rusqlite_orm = { version = "2", features = ["derive"] }
 ```
 
 It provides two macros:
@@ -64,7 +64,7 @@ Every persisted field's type must implement `Into<rusqlite_orm::types::value::Va
 - `PartialEq`/`Eq` and/or `Hash` impls when `comparable`/`hashable` are enabled.
 - `fetch_<field>_relationship(db)` / `fetch_<field>_relationship_in(conn)` for every field annotated with `#[relationship(...)]`.
 
-Every generated function comes in two forms: a **managed** one (e.g. `select_by_id(db, id)`) that takes `db: &rusqlite_orm::database::DatabasePool` and opens its own pooled connection internally, and a connection-taking one, suffixed `_in`, for composing several calls atomically (`exists_in`, `select_by_id_in`, `update_by_id_in`, `select_by_<name>_in`, `count_by_<name>_in`, `fetch_<field>_relationship_in`, ...). The `_in` form takes a `conn: &rusqlite_orm::rusqlite::Connection`, the `update_by_id_in`/`delete_by_id_in` instance methods included. The managed `update_by_id`/`delete_by_id` run their single statement on a plain pooled connection, without a transaction. Pass a `&mut rusqlite::Transaction` anywhere a `&rusqlite::Connection` is expected — it reborrows, since `Transaction` derefs to `Connection`.
+Every generated function comes in two forms: a **managed** `async` one (e.g. `select_by_id(db, id).await`) that takes `db: &rusqlite_orm::database::DatabasePool` and runs on a pooled connection in the blocking thread pool, and a connection-taking one, suffixed `_in`, for composing several calls atomically (`exists_in`, `select_by_id_in`, `update_by_id_in`, `select_by_<name>_in`, `count_by_<name>_in`, `fetch_<field>_relationship_in`, ...). The `_in` form takes a `conn: &rusqlite_orm::rusqlite::Connection`, the `update_by_id_in`/`delete_by_id_in` instance methods included. The managed `update_by_id`/`delete_by_id` run their single statement on a plain pooled connection, without a transaction. Pass a `&mut rusqlite::Transaction` anywhere a `&rusqlite::Connection` is expected — it reborrows, since `Transaction` derefs to `Connection`.
 
 Index/primary-key parameter types mirror the field types, with two exceptions to avoid unnecessary cloning: a `String` field becomes a `&str` parameter, and a `Vec<u8>` field becomes a `&[u8]` parameter.
 
@@ -146,7 +146,7 @@ Because inserting a row with an autoincrement field needs to read back SQLite's 
 
 ```rust
 let mut user = User { id: 0, email: "alice@example.com".into(), created_at: 0 };
-UserRepository::insert().item(&mut user).execute(&db)?;
+UserRepository::insert().item(&mut user).execute(&db).await?;
 // user.id now holds the rowid SQLite assigned to the row
 ```
 
@@ -203,14 +203,14 @@ pub membership: Option<Membership>,
 
 - Fields marked `#[relationship(...)]` are implicitly treated like `#[transient]`: they are excluded from `INSERT`/`SELECT` column lists and are populated via `Default::default()` when a row is first mapped into the struct, so the struct must implement `Default`. `#[transient]` and `#[relationship(...)]` cannot be combined on the same field — that's a compile error.
 - The macro generates two **instance methods** per relationship field (not on the repository, but directly on `YourStruct`):
-  - `fetch_<field>_relationship(&mut self, db: &rusqlite_orm::database::DatabasePool) -> rusqlite_orm::errors::Result<()>` — opens its own pooled connection via `db.run_in_connection(...)`, runs `<T>Repository::select().where_(<condition>)`, and assigns the result into `self.<field>`.
+  - `fetch_<field>_relationship(&mut self, db: &rusqlite_orm::database::DatabasePool) -> rusqlite_orm::errors::Result<()>` — is `async`: runs `<T>Repository::select().where_(<condition>)` with the managed `fetch`/`fetch_one` (on the blocking thread pool) and assigns the result into `self.<field>`.
   - `fetch_<field>_relationship_in(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()>` — same, but reuses an existing connection or transaction so it can be composed with other calls.
 - These methods mutate `self` in place; they don't return the related data, so call them and then read `self.<field>` afterwards.
 
 ```rust
-let mut post = PostRepository::select_by_id(&db, 1)?.unwrap();
-post.fetch_author_relationship(&db)?;
-post.fetch_comments_relationship(&db)?;
+let mut post = PostRepository::select_by_id(&db, 1).await?.unwrap();
+post.fetch_author_relationship(&db).await?;
+post.fetch_comments_relationship(&db).await?;
 
 println!("{:?} has {} comments", post.author, post.comments.len());
 ```

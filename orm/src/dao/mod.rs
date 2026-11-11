@@ -8,7 +8,7 @@ use crate::{
     types::{column_name::ColumnName, schema::Schema, table_name::TableName, value::Value},
 };
 
-pub trait Entity: Sized + 'static {
+pub trait Entity: Sized + Send + Sync + 'static {
     const SCHEMA: &'static Schema<Self>;
     const TABLE_NAME: &'static TableName<Self>;
     const FIELDS: &'static [ColumnName<Self>];
