@@ -31,6 +31,7 @@ The runtime crate of the [`rusqlite_orm`](../README.md) workspace: a lightweight
 - **SQL-file schema migrations** — the `ddls!("path")` macro embeds every `<version>_<description>.sql` file found in a directory (relative to the crate manifest) as an array expression of `DdlVersion`s; `DatabasePool::create_schema(&ddls)` applies them in order, tracked via SQLite's `PRAGMA user_version`, and runs `VACUUM` afterwards if anything was applied. Each `DdlVersion` also has an optional `update_fn` hook, run inside the same transaction right after that migration's SQL, for data migrations that plain SQL can't express.
 - **Serializable errors** — `DatabaseError` implements `serde::Serialize` (as its `Display` string), so it can be returned directly from, e.g., a Tauri command.
 - **Optional `derive` feature** — `rusqlite_orm = { version = "2", features = ["derive"] }` re-exports `Entity` and `ddls!` from `rusqlite_orm_macros` at the crate root (`use rusqlite_orm::Entity;`, `rusqlite_orm::ddls!(...)`).
+- **Bundled SQLite by default** — the default `bundled` feature compiles SQLite from source into your binary. Set `default-features = false` to link against the system `libsqlite3` instead (smaller binary, but a runtime dependency on the system library): `rusqlite_orm = { version = "2", default-features = false, features = ["derive"] }`.
 - **Query logging** — every generated statement is logged (via the `log` crate) with parameters interpolated, plus the number of affected/fetched rows.
 
 ## Installation

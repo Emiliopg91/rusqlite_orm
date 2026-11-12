@@ -1,6 +1,6 @@
 [package]
 name = "rusqlite_orm"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2024"
 description = "ORM for rusqlite"
 repository = "https://github.com/Emiliopg91/rusqlite_orm/orm"
@@ -10,16 +10,20 @@ categories = ["database"]
 
 [dependencies]
 r2d2 = "0"
-r2d2_sqlite = { version = "0", features = ["bundled"] }
+r2d2_sqlite = "0"
 # Not used directly: enables `Connection::limit`, to size multi-row INSERT batches.
 rusqlite = { version = "0", features = ["limits"] }
 thiserror = "2"
 log = "0"
 serde = "1.0.229"
-rusqlite_orm_macros = { version = "2", path = "../macros", optional = true }
+rusqlite_orm_macros = { version = "2.1", path = "../macros", optional = true }
 blocking = "1"
 
 [features]
+default = ["bundled"]
+# Compiles SQLite from source into the binary. Disable it (`default-features = false`)
+# to link against the system `libsqlite3` instead.
+bundled = ["r2d2_sqlite/bundled"]
 derive = ["dep:rusqlite_orm_macros"]
 
 [dev-dependencies]
