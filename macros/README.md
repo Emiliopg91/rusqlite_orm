@@ -5,7 +5,7 @@ Procedural macros for [`rusqlite_orm`](../orm). This crate is meant to be used t
 You normally don't need to depend on it directly: enabling the `derive` feature of `rusqlite_orm` re-exports both macros at its crate root (`rusqlite_orm::Entity`, `rusqlite_orm::ddls!`). The examples below use the derive-feature import paths; without the feature, import them from `rusqlite_orm_macros` instead.
 
 ```toml
-rusqlite_orm = { version = "2", features = ["derive"] }
+rusqlite_orm = { version = "3", features = ["derive"] }
 ```
 
 It provides two macros:
@@ -204,7 +204,7 @@ pub membership: Option<Membership>,
 - Fields marked `#[relationship(...)]` are implicitly treated like `#[transient]`: they are excluded from `INSERT`/`SELECT` column lists and are populated via `Default::default()` when a row is first mapped into the struct, so the struct must implement `Default`. `#[transient]` and `#[relationship(...)]` cannot be combined on the same field — that's a compile error.
 - The macro generates two **instance methods** per relationship field (not on the repository, but directly on `YourStruct`):
   - `fetch_<field>_relationship(&mut self, db: &rusqlite_orm::database::DatabasePool) -> rusqlite_orm::errors::Result<()>` — is `async`: runs `<T>Repository::select().where_(<condition>)` with the managed `fetch`/`fetch_one` (on the blocking thread pool) and assigns the result into `self.<field>`.
-  - `fetch_<field>_relationship_in(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()>` — same, but reuses an existing connection or transaction so it can be composed with other calls.
+  - `fetch_<field>_relationship_in(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()>` — also `async`, but reuses an existing connection or transaction so it can be composed with other calls.
 - These methods mutate `self` in place; they don't return the related data, so call them and then read `self.<field>` afterwards.
 
 ```rust
@@ -227,13 +227,13 @@ let ddls = rusqlite_orm::ddls!("migrations");
 static DDLS: [rusqlite_orm::database::DdlVersion; 3] = rusqlite_orm::ddls!("migrations");
 ```
 
-Every entry is generated with `update_fn: None`. `DdlVersion::update_fn` is an `Option<fn(&mut rusqlite::Transaction) -> rusqlite_orm::errors::Result<()>>` that `create_schema` runs inside the same transaction, right after that migration's SQL; bind the array with `let mut` to assign one where a migration needs Rust code:
+Every entry is generated with `update_fn: None`. `DdlVersion::update_fn` is an `Option<rusqlite_orm::database::UpdateFn>`, an async hook taking `&mut rusqlite::Transaction` (write it as an `async fn` and box its future) that `create_schema` runs inside the same transaction, right after that migration's SQL; bind the array with `let mut` to assign one where a migration needs Rust code:
 
 ```rust
 let mut ddls = rusqlite_orm::ddls!("migrations");
 for ddl in &mut ddls {
     if ddl.version == 5 {
-        ddl.update_fn = Some(recalculate_derived_columns);
+        ddl.update_fn = Some(|tx| Box::pin(recalculate_derived_columns(tx)));
     }
 }
 ```

@@ -828,10 +828,11 @@ fn build_entity_with_relationships_trait_impl(
                 }
 
                 #[doc = #doc_conn]
-                pub fn #fn_name_conn(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()>{
+                pub async fn #fn_name_conn(&mut self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()>{
                     self.#field = <<#ty as rusqlite_orm::dao::Entity>::Repository as rusqlite_orm::dao::Repository<#ty>>::select().
                     where_(#condition)
-                    .#fn_inv(conn)?;
+                    .#fn_inv(conn)
+                    .await?;
                     Ok(())
                 }
             }
@@ -883,11 +884,12 @@ fn build_primary_key_impl(
             }
 
             #[doc = "Update row by primary key in connection"]
-            pub fn update_by_id_in(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()> {
+            pub async fn update_by_id_in(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()> {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::update()
                     #(#update_sets)*
                     .where_(#update_delete_condition)
-                    .execute_in(conn)?;
+                    .execute_in(conn)
+                    .await?;
                 Ok(())
             }
 
@@ -901,10 +903,11 @@ fn build_primary_key_impl(
             }
 
             #[doc = "Delete row by primary key in connection"]
-            pub fn delete_by_id_in(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()> {
+            pub async fn delete_by_id_in(&self, conn: &rusqlite_orm::rusqlite::Connection) -> rusqlite_orm::errors::Result<()> {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::delete()
                     .where_(#update_delete_condition)
-                    .execute_in(conn)?;
+                    .execute_in(conn)
+                    .await?;
                 Ok(())
             }
     }
@@ -938,12 +941,13 @@ fn repository_build_primary_key_impl(
                 Ok(count>0)
             }
             #[doc = "Checks if row exists in connection"]
-            pub fn exists_in(conn: &rusqlite_orm::rusqlite::Connection,
+            pub async fn exists_in(conn: &rusqlite_orm::rusqlite::Connection,
                 #(#by_id_params),*
             ) -> rusqlite_orm::errors::Result<bool> {
                 let count = <Self as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#id_condition)
-                    .count_in(conn)?;
+                    .count_in(conn)
+                    .await?;
                 Ok(count>0)
             }
 
@@ -959,13 +963,14 @@ fn repository_build_primary_key_impl(
             }
 
             #[doc = "Fetch row by primary key in connection"]
-            pub fn select_by_id_in(
+            pub async fn select_by_id_in(
                 conn: &rusqlite_orm::rusqlite::Connection,
                 #(#by_id_params),*
             ) -> rusqlite_orm::errors::Result<Option<#struct_name>> {
                 <Self as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#id_condition)
                     .fetch_one_in(conn)
+                    .await
             }
     }
 }
@@ -1037,7 +1042,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
         let (cnt_impl, cnt_impl_async) = if index.unique{
             (quote!{
                 Ok(<#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
-                    .where_(#condition).count_in(conn)?>0)
+                    .where_(#condition).count_in(conn).await?>0)
             }, quote!{
                 Ok(<#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#condition).count(db).await?>0)
@@ -1045,7 +1050,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
         } else {
             (quote! {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
-                    .where_(#condition).count_in(conn)
+                    .where_(#condition).count_in(conn).await
             }, quote! {
                 <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#condition).count(db).await
@@ -1064,9 +1069,9 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             }
         };
         let (fetch_inv, fetch_inv_async) = if index.unique {
-            (quote!{fetch_one_in(conn)}, quote!{fetch_one(db).await})
+            (quote!{fetch_one_in(conn).await}, quote!{fetch_one(db).await})
         } else {
-            (quote! {fetch_in(conn)}, quote!{fetch(db).await})
+            (quote! {fetch_in(conn).await}, quote!{fetch(db).await})
         };
 
         quote! {
@@ -1078,7 +1083,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
                 builder.#fetch_inv_async
             }
             #[doc = #doc1]
-            pub fn #fn_name_conn(conn: &rusqlite_orm::rusqlite::Connection, #(#select_params),* #order_by_arg) -> rusqlite_orm::errors::Result<#ret_type> {
+            pub async fn #fn_name_conn(conn: &rusqlite_orm::rusqlite::Connection, #(#select_params),* #order_by_arg) -> rusqlite_orm::errors::Result<#ret_type> {
                 let mut builder = <#repo_ident as rusqlite_orm::dao::Repository<#struct_name>>::select()
                     .where_(#condition);
                 #add_order_by
@@ -1092,7 +1097,7 @@ fn build_indexes_impl(struct_name: &syn::Ident, indexes: &[IndexDefinition]) -> 
             }
 
             #[doc = #doc3]
-            pub fn #fn_name_count_conn(conn: &rusqlite_orm::rusqlite::Connection, #(#select_params),*) -> rusqlite_orm::errors::Result<#cnt_ret_type> {
+            pub async fn #fn_name_count_conn(conn: &rusqlite_orm::rusqlite::Connection, #(#select_params),*) -> rusqlite_orm::errors::Result<#cnt_ret_type> {
                 #cnt_impl
             }
         }

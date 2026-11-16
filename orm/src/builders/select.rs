@@ -220,11 +220,15 @@ where
         K: Clone + Send + 'static,
     {
         let builder = self.clone();
-        db.run_in_connection(move |conn| Ok(builder.count_in(conn)?))
+        db.run_sync_in_connection(move |conn| Ok(builder.count_sync(conn)?))
             .await
     }
 
-    pub fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
+    pub async fn count_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
+        self.count_sync(conn)
+    }
+
+    fn count_sync(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
         let mut sentence = format!("SELECT COUNT(*) FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
         let mut params = Vec::new();
         self.push_where(&mut sentence, &mut params);
@@ -241,7 +245,7 @@ where
         Ok(total)
     }
 
-    pub fn fetch_in(
+    pub async fn fetch_in(
         &self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::errors::Result<Vec<K::Output>> {
@@ -254,12 +258,19 @@ where
         K::Output: Send + 'static,
     {
         let builder = self.clone();
-        db.run_in_connection(move |conn| Ok(builder.fetch_in(conn)?))
+        db.run_sync_in_connection(move |conn| Ok(builder.fetch_limited(conn, builder.limit)?))
             .await
     }
 
     /// First matching row, if any. Runs with `LIMIT 1` so SQLite stops after one row.
-    pub fn fetch_one_in(
+    pub async fn fetch_one_in(
+        &self,
+        conn: &crate::rusqlite::Connection,
+    ) -> crate::errors::Result<Option<K::Output>> {
+        self.fetch_one_sync(conn)
+    }
+
+    fn fetch_one_sync(
         &self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::errors::Result<Option<K::Output>> {
@@ -273,7 +284,7 @@ where
         K::Output: Send + 'static,
     {
         let builder = self.clone();
-        db.run_in_connection(move |conn| Ok(builder.fetch_one_in(conn)?))
+        db.run_sync_in_connection(move |conn| Ok(builder.fetch_one_sync(conn)?))
             .await
     }
 

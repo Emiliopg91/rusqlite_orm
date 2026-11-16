@@ -47,7 +47,7 @@ mod book {
     }
 }
 
-use author::{Author, AuthorRepository};
+use author::{Author, AuthorRepository, entity as author_entity};
 use book::{Book, BookRepository, entity as book_entity};
 
 const DDLS: [DdlVersion; 1] = [DdlVersion {
@@ -200,14 +200,15 @@ fn transactions_commit_or_roll_back() {
     pollster::block_on(async {
         let db = open().await;
 
-        let author = assert_send(db.run_in_transaction(|tx| {
+        let author = assert_send(db.run_in_transaction(async |tx| {
             let mut author = Author {
                 name: "Ann".into(),
                 ..Default::default()
             };
             AuthorRepository::insert()
                 .item(&mut author)
-                .execute_in(tx)?;
+                .execute_in(tx)
+                .await?;
             Ok(author)
         }))
         .await
@@ -215,18 +216,24 @@ fn transactions_commit_or_roll_back() {
         assert!(AuthorRepository::exists(&db, author.id).await.unwrap());
 
         let err = db
-            .run_in_transaction(|tx| {
+            .run_in_transaction(async |tx| {
                 let mut other = Author {
                     name: "Bob".into(),
                     ..Default::default()
                 };
-                AuthorRepository::insert().item(&mut other).execute_in(tx)?;
+                AuthorRepository::insert()
+                    .item(&mut other)
+                    .execute_in(tx)
+                    .await?;
                 // Same unique name: fails, and the whole transaction rolls back.
                 let mut dup = Author {
                     name: "Bob".into(),
                     ..Default::default()
                 };
-                AuthorRepository::insert().item(&mut dup).execute_in(tx)?;
+                AuthorRepository::insert()
+                    .item(&mut dup)
+                    .execute_in(tx)
+                    .await?;
                 Ok(())
             })
             .await
@@ -234,11 +241,12 @@ fn transactions_commit_or_roll_back() {
         assert!(matches!(err, DatabaseError::Transaction(_)));
         assert!(!AuthorRepository::exists_by_name(&db, "Bob").await.unwrap());
 
-        let count = assert_send(
-            db.run_in_connection(|conn| Ok(AuthorRepository::select().count_in(conn)?)),
-        )
-        .await
-        .unwrap();
+        let count =
+            assert_send(db.run_in_connection(async |conn| {
+                Ok(AuthorRepository::select().count_in(conn).await?)
+            }))
+            .await
+            .unwrap();
         assert_eq!(count, 1);
     });
 }
@@ -276,5 +284,100 @@ fn or_ignore_skips_ids_of_rows_not_inserted() {
         assert_eq!(inserted, 1);
         assert_eq!(dup.id, 0, "ignored row keeps its id untouched");
         assert!(new.id > ann.id);
+    });
+}
+
+#[test]
+fn generated_in_helpers_are_async() {
+    pollster::block_on(async {
+        let db = open().await;
+
+        let (author, books) = db
+            .run_in_transaction(async |tx| {
+                let mut ann = Author {
+                    name: "Ann".into(),
+                    ..Default::default()
+                };
+                AuthorRepository::insert()
+                    .item(&mut ann)
+                    .execute_in(tx)
+                    .await?;
+                let mut book = Book {
+                    id: 1,
+                    author_id: ann.id,
+                    title: "Book 1".into(),
+                    ..Default::default()
+                };
+                BookRepository::insert()
+                    .item(&mut book)
+                    .execute_in(tx)
+                    .await?;
+
+                assert!(AuthorRepository::exists_in(tx, ann.id).await?);
+                assert!(AuthorRepository::exists_by_name_in(tx, "Ann").await?);
+                assert_eq!(BookRepository::count_by_author_in(tx, ann.id).await?, 1);
+                let by_author = BookRepository::select_by_author_in(tx, ann.id, None).await?;
+
+                book.title = "Renamed".into();
+                book.update_by_id_in(tx).await?;
+                let mut loaded = BookRepository::select_by_id_in(tx, 1).await?.unwrap();
+                loaded.fetch_author_relationship_in(tx).await?;
+                assert_eq!(loaded.title, "Renamed");
+                assert_eq!(loaded.author.as_ref().map(|a| a.id), Some(ann.id));
+
+                let mut ann_loaded = AuthorRepository::select_by_name_in(tx, "Ann")
+                    .await?
+                    .unwrap();
+                ann_loaded.fetch_books_relationship_in(tx).await?;
+                assert_eq!(ann_loaded.books.len(), 1);
+
+                loaded.delete_by_id_in(tx).await?;
+                Ok((ann, by_author))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(books.len(), 1);
+        assert_eq!(books[0].author_id, author.id);
+        assert_eq!(BookRepository::select().count(&db).await.unwrap(), 0);
+    });
+}
+
+async fn rename_authors(
+    tx: &mut rusqlite_orm::rusqlite::Transaction<'_>,
+) -> rusqlite_orm::errors::Result<()> {
+    AuthorRepository::update()
+        .set(author_entity::columns::NAME, "Migrated".into())
+        .execute_in(tx)
+        .await?;
+    Ok(())
+}
+
+#[test]
+fn async_update_fn_runs_in_migration() {
+    pollster::block_on(async {
+        let db = open().await;
+        AuthorRepository::insert()
+            .item(&mut Author {
+                name: "Ann".into(),
+                ..Default::default()
+            })
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let next = [DdlVersion {
+            version: DDLS.iter().map(|d| d.version).max().unwrap() + 1,
+            description: "rename authors",
+            sql: "SELECT 1;",
+            update_fn: Some(|tx| Box::pin(rename_authors(tx))),
+        }];
+        db.create_schema(&next).await.unwrap();
+
+        assert!(
+            AuthorRepository::exists_by_name(&db, "Migrated")
+                .await
+                .unwrap()
+        );
     });
 }

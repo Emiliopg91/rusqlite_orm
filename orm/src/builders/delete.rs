@@ -54,12 +54,19 @@ where
     /// Runs on a pooled connection: a single statement is atomic on its own.
     pub async fn execute(&self, db: &DatabasePool) -> crate::errors::Result<usize> {
         let builder = self.clone();
-        db.run_in_connection(move |conn| Ok(builder.execute_in(conn)?))
+        db.run_sync_in_connection(move |conn| Ok(builder.execute_sync(conn)?))
             .await
     }
 
     /// Runs on the given connection, which may be a `Transaction` through `Deref`.
-    pub fn execute_in(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<usize> {
+    pub async fn execute_in(
+        &self,
+        conn: &crate::rusqlite::Connection,
+    ) -> crate::errors::Result<usize> {
+        self.execute_sync(conn)
+    }
+
+    fn execute_sync(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<usize> {
         let mut sentence = format!("DELETE FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
 
         let mut params: Vec<&Value> = Vec::new();

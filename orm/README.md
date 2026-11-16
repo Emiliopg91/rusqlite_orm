@@ -25,13 +25,13 @@ The runtime crate of the [`rusqlite_orm`](../README.md) workspace: a lightweight
 - **Multiple SQLite schemas** — `#[entity(schema = "...")]` attaches an entity to a schema other than `"main"` (e.g. an `ATTACH`ed database); every generated statement is qualified as `<schema>.<table>`.
 - **Wide column type support** — the `Value` enum (`rusqlite_orm::types::value::Value`) covers every signed/unsigned integer width (`i8`…`i64`, `isize`, `u8`…`u64`, `usize`), `f32`/`f64`, `bool`, `String`, `Vec<u8>` (BLOB, hex-encoded when logged) and `Option<T>` (mapped to `NULL`/the inner value), plus a `Value::Raw(String)` variant for SQL literals/function calls that must not be bound as a parameter (see the `WHERE` clause reference below).
 - **Configurable pooled connections** — `DatabaseConnectionBuilder` is a typestate builder: it starts in an in-memory state (single connection, `PRAGMA journal_mode = MEMORY`), and calling `.location(path)` switches it to a file-backed state with its own defaults (pool of 5, `PRAGMA journal_mode = DELETE`). Pool size, min idle connections, connection/busy timeouts, journal mode and `PRAGMA foreign_keys` are all configurable before calling `.build(name)`, which opens an [`r2d2`](https://crates.io/crates/r2d2)-backed pool (via `r2d2_sqlite`) and hands you back an owned `DatabasePool` — there is no global singleton, so you're free to build more than one.
-- **Async API, any runtime** — every method that takes a `&DatabasePool` is `async`. rusqlite itself is synchronous, so each call runs on the [`blocking`](https://crates.io/crates/blocking) thread pool, which works under any executor (tokio, async-std, smol, or a plain `block_on`) and never stalls an async worker thread. The connection-taking `_in` methods stay synchronous: they are what you call inside `run_in_connection`/`run_in_transaction` closures, which run whole on that thread pool, so a transaction is never held open across an `.await`. All returned futures are `Send`, and entities must be `Send + Sync`.
+- **Async API, any runtime** — every method that takes a `&DatabasePool` is `async`. rusqlite itself is synchronous, so each call runs on the [`blocking`](https://crates.io/crates/blocking) thread pool, which works under any executor (tokio, async-std, smol, or a plain `block_on`) and never stalls an async worker thread. The connection-taking `_in` methods are `async` too: they are what you await inside the async closures passed to `run_in_connection`/`run_in_transaction`, which are driven to completion on that same blocking thread, so a connection or transaction never leaves it and the closure's future doesn't need to be `Send`. Inside those closures only await the ORM's `_in` methods (or other runtime-agnostic futures): there is no runtime reactor on that thread, so e.g. tokio I/O or timers panic. The futures returned by the managed (pool-taking) methods are `Send`, and entities must be `Send + Sync`.
 - **Two ways to run statements** — `DatabasePool::run_in_connection(...)` borrows a pooled connection for one or more statements (not atomic across calls unless you wrap them yourself), and `DatabasePool::run_in_transaction(...)` runs the closure inside a single `rusqlite::Transaction`. Every query builder and generated helper exposes both a "managed" method (`execute`, `fetch_one`, ...) that takes `&DatabasePool` and opens its own pooled connection/transaction, and a connection-taking counterpart for composing multiple statements: the read side (`fetch_in`, `fetch_one_in`, `count_in`, and the primary-key/index `select_*`/`exists*`/`count_*` helpers) takes a `&rusqlite::Connection`, and so does the write side (`execute_in`, and the generated `update_by_id_in`/`delete_by_id_in`); a `Transaction` can be passed anywhere, since it derefs to `Connection`. The managed write methods only open a transaction when it buys atomicity: `update`/`delete` `execute`, `update_by_id` and `delete_by_id` are a single statement and run on a plain pooled connection, while `InsertBuilder::execute` uses a transaction only for more than one item (which may take several statements).
 - **Cached prepared statements** — every statement the builders run (`SELECT`, `COUNT`, `INSERT`, `UPDATE`, `DELETE`) is prepared via `Connection::prepare_cached`, so repeated queries with the same shape reuse the cached statement; an autoincrement multi-item `INSERT` prepares its statement once and reuses it for every item. Statement logging (parameters interpolated into the SQL) is only built when `debug` logging is enabled.
 - **SQL-file schema migrations** — the `ddls!("path")` macro embeds every `<version>_<description>.sql` file found in a directory (relative to the crate manifest) as an array expression of `DdlVersion`s; `DatabasePool::create_schema(&ddls)` applies them in order, tracked via SQLite's `PRAGMA user_version`, and runs `VACUUM` afterwards if anything was applied. Each `DdlVersion` also has an optional `update_fn` hook, run inside the same transaction right after that migration's SQL, for data migrations that plain SQL can't express.
 - **Serializable errors** — `DatabaseError` implements `serde::Serialize` (as its `Display` string), so it can be returned directly from, e.g., a Tauri command.
-- **Optional `derive` feature** — `rusqlite_orm = { version = "2", features = ["derive"] }` re-exports `Entity` and `ddls!` from `rusqlite_orm_macros` at the crate root (`use rusqlite_orm::Entity;`, `rusqlite_orm::ddls!(...)`).
-- **Bundled SQLite by default** — the default `bundled` feature compiles SQLite from source into your binary. Set `default-features = false` to link against the system `libsqlite3` instead (smaller binary, but a runtime dependency on the system library): `rusqlite_orm = { version = "2", default-features = false, features = ["derive"] }`.
+- **Optional `derive` feature** — `rusqlite_orm = { version = "3", features = ["derive"] }` re-exports `Entity` and `ddls!` from `rusqlite_orm_macros` at the crate root (`use rusqlite_orm::Entity;`, `rusqlite_orm::ddls!(...)`).
+- **Bundled SQLite by default** — the default `bundled` feature compiles SQLite from source into your binary. Set `default-features = false` to link against the system `libsqlite3` instead (smaller binary, but a runtime dependency on the system library): `rusqlite_orm = { version = "3", default-features = false, features = ["derive"] }`.
 - **Query logging** — every generated statement is logged (via the `log` crate) with parameters interpolated, plus the number of affected/fetched rows.
 
 ## Installation
@@ -40,15 +40,15 @@ Enable the `derive` feature, which re-exports the macros from `rusqlite_orm_macr
 
 ```toml
 [dependencies]
-rusqlite_orm = { version = "2", features = ["derive"] }
+rusqlite_orm = { version = "3", features = ["derive"] }
 ```
 
 Or, without the feature, depend on both crates explicitly (and import the macros from `rusqlite_orm_macros` instead of `rusqlite_orm`):
 
 ```toml
 [dependencies]
-rusqlite_orm = "2"
-rusqlite_orm_macros = "2"
+rusqlite_orm = "3"
+rusqlite_orm_macros = "3"
 ```
 
 `rusqlite_orm` re-exports `rusqlite`, accessible as `rusqlite_orm::rusqlite`, so most consumers won't need to add `rusqlite` as a separate dependency.
@@ -114,13 +114,13 @@ let ddls = rusqlite_orm::ddls!("migrations"); // `rusqlite_orm_macros::ddls!` wi
 
 To keep it around as a global, give it an explicit array type, e.g. `static DDLS: [DdlVersion; 3] = rusqlite_orm::ddls!("migrations");`.
 
-Every entry starts with `update_fn: None`. `DdlVersion::update_fn` is an `Option<fn(&mut rusqlite::Transaction) -> rusqlite_orm::errors::Result<()>>`; set it on any migration that needs Rust code (e.g. recomputing a derived column) to have it run in the same transaction, right after that migration's SQL:
+Every entry starts with `update_fn: None`. `DdlVersion::update_fn` is an `Option<rusqlite_orm::database::UpdateFn>`, an async hook taking `&mut rusqlite::Transaction` (write it as an `async fn` and box its future); set it on any migration that needs Rust code (e.g. recomputing a derived column) to have it run in the same transaction, right after that migration's SQL:
 
 ```rust
 let mut ddls = rusqlite_orm::ddls!("migrations");
 for ddl in &mut ddls {
     if ddl.version == 5 {
-        ddl.update_fn = Some(recalculate_derived_columns);
+        ddl.update_fn = Some(|tx| Box::pin(recalculate_derived_columns(tx)));
     }
 }
 ```
@@ -227,20 +227,20 @@ let names: Vec<(u32, String)> = UserRepository::select()
 
 All the managed methods (those taking `&DatabasePool`) are `async fn`s, and `DatabasePool` is cheap to `Clone` (clones share the same pool). Internally each call moves its work to the [`blocking`](https://crates.io/crates/blocking) thread pool: builders are cloned (they only hold `Value`s), and `InsertBuilder` sends only the items' insert values, assigning the autoincrement ids it reads back to the borrowed items once it finishes. Nothing ties the crate to an async runtime.
 
-The closures passed to `run_in_connection`/`run_in_transaction` are synchronous and must be `Send + 'static`, since they run on another thread: move what they need into them and return what you need back, instead of borrowing locals.
+The closures passed to `run_in_connection`/`run_in_transaction` are async closures (`async move |tx| { ... }`) and must be `Send + 'static`, since they run on another thread: move what they need into them and return what you need back, instead of borrowing locals. They are driven with `block_on` on that blocking thread, so inside them await only the `_in` methods (or other runtime-agnostic futures), never tokio I/O or timers.
 
 ### 5. Composing statements in a single transaction
 
-Every builder and repository helper exposes a connection-taking `_in` variant so several statements can share one connection or transaction:
+Every builder and repository helper exposes a connection-taking, `async` `_in` variant so several statements can share one connection or transaction:
 
 ```rust
 use rusqlite_orm::database::DatabasePool;
 
 // The closure runs on another thread: it owns `user` and hands it back.
 let (user, fetched) = db
-    .run_in_transaction(move |tx| {
-        UserRepository::insert().item(&mut user).execute_in(tx)?;
-        let fetched = UserRepository::select_by_id_in(tx, user.id)?;
+    .run_in_transaction(async move |tx| {
+        UserRepository::insert().item(&mut user).execute_in(tx).await?;
+        let fetched = UserRepository::select_by_id_in(tx, user.id).await?;
         Ok((user, fetched))
     })
     .await?;
@@ -285,9 +285,9 @@ post.fetch_comments_relationship(&db).await?;  // fills post.comments: Vec<Comme
 
 // Composable in an existing connection/transaction:
 let post = db
-    .run_in_transaction(move |tx| {
-        post.fetch_author_relationship_in(tx)?;
-        post.fetch_comments_relationship_in(tx)?;
+    .run_in_transaction(async move |tx| {
+        post.fetch_author_relationship_in(tx).await?;
+        post.fetch_comments_relationship_in(tx).await?;
         Ok(post)
     })
     .await?;

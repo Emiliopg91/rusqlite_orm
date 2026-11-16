@@ -64,10 +64,10 @@ where
         let mode = self.mode();
 
         let (inserted, ids) = if rows.len() <= 1 {
-            db.run_in_connection(move |conn| Ok(insert_rows::<T>(conn, mode, &rows)?))
+            db.run_sync_in_connection(move |conn| Ok(insert_rows::<T>(conn, mode, &rows)?))
                 .await?
         } else {
-            db.run_in_transaction(move |tx| Ok(insert_rows::<T>(tx, mode, &rows)?))
+            db.run_sync_in_transaction(move |tx| Ok(insert_rows::<T>(tx, mode, &rows)?))
                 .await?
         };
 
@@ -80,7 +80,7 @@ where
     /// Several items may take more than one statement (one per item with an autoincrement
     /// field, or one per batch of `SQLITE_LIMIT_VARIABLE_NUMBER` parameters otherwise), so they
     /// are only inserted atomically when `conn` is a transaction.
-    pub fn execute_in(
+    pub async fn execute_in(
         &mut self,
         conn: &crate::rusqlite::Connection,
     ) -> crate::errors::Result<usize> {
