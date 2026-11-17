@@ -12,6 +12,7 @@ The runtime crate of the [`rusqlite_orm`](../README.md) workspace: a lightweight
 - **Rich `WHERE` clauses** — `Eq`, `NotEq`, `Gt`, `Gte`, `Lt`, `Lte`, `In`, `InMultiple` (tuple `IN`), `Null`, `NotNull`, combinable with `And` / `Or`, plus subquery variants (`EqSub`, `NotEqSub`, `InSub`, `NotInSub`, `InMultipleSub`) that embed another `SelectBuilder` (via `.to_subquery()`) inside the condition. Any comparison value can also be `Value::Raw(sql)` to splice a SQL expression (e.g. a SQLite function call like `CURRENT_TIMESTAMP`) in place of a bound parameter.
 - **Ordering, limits & pagination** — `OrderBy::Asc` / `OrderBy::Desc`, `.limit(n)` and `.offset(n)`. `SelectBuilder` is `Clone` (when its kind is); `fetch`/`fetch_in` return every matching row, while `fetch_one`/`fetch_one_in` run the query with `LIMIT 1` (the builder itself is left untouched) instead of fetching every matching row and discarding all but the first.
 - **Raw / non-mapped selects** — calling `.columns(&[...])` or `.distinct(&[...])` on `select()` switches it from returning `Vec<Entity>` to returning `Row`/`Rows` (a simple column-name → `Value` map), for projections that don't need to cover every persisted column. `Row` has typed getters (`get_int`, `get_u16`, `get_f64`, `get_bool`, `get_text`, `get_blob`, ... each with a `_nullable` variant), see [Reading non-mapped rows](#reading-non-mapped-rows).
+- **Aggregate functions & grouping** — `.columns(...)` also takes `Expression`s: `COUNT`, `MAX`, `MIN`, `SUM` and `AVG` over a column (`entity::columns::DATE.max()`, ...), `Expression::count_all()` for `COUNT(*)`, each optionally `.alias("name")`d. `.group_by(&[...])` adds a `GROUP BY` clause, and `count()` on a grouped select counts its groups. Grouped selects can be embedded as subqueries too, see [Aggregates and GROUP BY](#aggregates-and-group-by).
 - **Generated convenience methods** for entities with a struct-level `#[primary_key(field_a, field_b, ...)]` attribute:
   - on the **repository**: `exists`, `select_by_id` (and `_in` variants);
   - on the **entity instance** itself: `update_by_id`, `delete_by_id` (and `_in` variants).
@@ -221,6 +222,41 @@ let names: Vec<(u32, String)> = UserRepository::select()
         )
     })
     .collect();
+```
+
+#### Aggregates and GROUP BY
+
+`.columns(...)` and `.distinct(...)` take columns or `Expression`s, so plain columns and aggregate functions can be mixed (convert columns with `.into()` when they share a slice with functions). `ColumnName` has `.count()`, `.max()`, `.min()`, `.sum()` and `.avg()`, and `Expression::count_all()` renders `COUNT(*)`. In the returned rows a column is read by its name, an aliased expression (`.alias("name")`) by its alias, and an unaliased function by its SQL text, e.g. `"MAX(date)"`.
+
+`.group_by(&[...])` groups the rows by the given columns, after the `WHERE` clause. `count()`/`count_in()` on a grouped select count its groups (ordering, limit and offset are ignored, as for any count).
+
+```rust
+use rusqlite_orm::types::expression::Expression;
+
+// Number of orders and latest order date of each customer
+let per_customer: Vec<(i64, i64, i64)> = OrderRepository::select()
+    .columns(&[
+        entity::columns::CUSTOMER.into(),
+        entity::columns::DATE.max().alias("latest"),
+        Expression::count_all().alias("orders"),
+    ])
+    .group_by(&[entity::columns::CUSTOMER])
+    .fetch(&db).await?
+    .iter()
+    .map(|row| (row.get_int("customer"), row.get_int("latest"), row.get_int("orders")))
+    .collect();
+
+// As a subquery: the latest order of each customer
+let latest = OrderRepository::select()
+    .columns(&[entity::columns::CUSTOMER.into(), entity::columns::DATE.max()])
+    .group_by(&[entity::columns::CUSTOMER])
+    .to_subquery();
+let orders = OrderRepository::select()
+    .where_(Where::InMultipleSub(
+        vec![entity::columns::CUSTOMER, entity::columns::DATE],
+        latest,
+    ))
+    .fetch(&db).await?;
 ```
 
 ### Async model

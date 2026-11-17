@@ -6,7 +6,7 @@ use rusqlite_orm::{
     dao::Repository,
     database::{DatabasePool, DdlVersion, builder::DatabaseConnectionBuilder},
     errors::DatabaseError,
-    types::{order_by::OrderBy, where_clause::Where},
+    types::{expression::Expression, order_by::OrderBy, where_clause::Where},
 };
 
 mod author {
@@ -379,5 +379,99 @@ fn async_update_fn_runs_in_migration() {
                 .await
                 .unwrap()
         );
+    });
+}
+
+#[test]
+fn aggregates_and_group_by() {
+    pollster::block_on(async {
+        let db = open().await;
+
+        let mut books: Vec<Book> = [(1, 10), (2, 10), (3, 20), (4, 10), (5, 30)]
+            .into_iter()
+            .map(|(id, author_id)| Book {
+                id,
+                author_id,
+                title: format!("Book {id}"),
+                ..Default::default()
+            })
+            .collect();
+        let mut insert = BookRepository::insert();
+        for book in &mut books {
+            insert = insert.item(book);
+        }
+        insert.execute(&db).await.unwrap();
+
+        // Unaliased functions are read by their SQL text, aliased ones by their alias
+        let groups: Vec<(i64, i64, i64)> = BookRepository::select()
+            .columns(&[
+                book_entity::columns::AUTHOR_ID.into(),
+                book_entity::columns::ID.max(),
+                Expression::count_all().alias("total"),
+            ])
+            .where_(Where::NotEq(book_entity::columns::AUTHOR_ID, 30.into()))
+            .group_by(&[book_entity::columns::AUTHOR_ID])
+            .order_by(OrderBy::Asc(book_entity::columns::AUTHOR_ID))
+            .fetch(&db)
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                (
+                    r.get_int("author_id"),
+                    r.get_int("MAX(id)"),
+                    r.get_int("total"),
+                )
+            })
+            .collect();
+        assert_eq!(groups, [(10, 4, 3), (20, 3, 1)]);
+
+        // Counting a grouped select counts its groups
+        let authors = BookRepository::select()
+            .columns(&[book_entity::columns::AUTHOR_ID])
+            .group_by(&[book_entity::columns::AUTHOR_ID])
+            .count(&db)
+            .await
+            .unwrap();
+        assert_eq!(authors, 3);
+
+        // Without GROUP BY a function aggregates every matching row
+        let row = BookRepository::select()
+            .columns(&[
+                book_entity::columns::ID.min().alias("first"),
+                book_entity::columns::ID.sum().alias("sum"),
+                book_entity::columns::ID.avg().alias("avg"),
+                book_entity::columns::TITLE.count().alias("titles"),
+            ])
+            .fetch_one(&db)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.get_int("first"), 1);
+        assert_eq!(row.get_int("sum"), 15);
+        assert_eq!(row.get_f64("avg"), 3.0);
+        assert_eq!(row.get_int("titles"), 5);
+
+        // As a subquery: the latest book of each author
+        let latest = BookRepository::select()
+            .columns(&[
+                book_entity::columns::AUTHOR_ID.into(),
+                book_entity::columns::ID.max(),
+            ])
+            .group_by(&[book_entity::columns::AUTHOR_ID])
+            .to_subquery();
+        let titles: Vec<String> = BookRepository::select()
+            .where_(Where::InMultipleSub(
+                vec![book_entity::columns::AUTHOR_ID, book_entity::columns::ID],
+                latest,
+            ))
+            .order_by(OrderBy::Asc(book_entity::columns::ID))
+            .fetch(&db)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|b| b.title)
+            .collect();
+        assert_eq!(titles, ["Book 3", "Book 4", "Book 5"]);
     });
 }

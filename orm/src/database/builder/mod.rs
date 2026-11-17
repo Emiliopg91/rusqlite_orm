@@ -86,9 +86,7 @@ impl<L> DatabaseConnectionBuilder<L> {
             literal_for(journal_mode)
         ))?;
 
-        let res = conn.busy_timeout(busy_timeout);
-
-        res
+        conn.busy_timeout(busy_timeout)
     }
 
     fn build_with_manager(

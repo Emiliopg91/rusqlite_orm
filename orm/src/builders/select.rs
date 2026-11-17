@@ -11,6 +11,7 @@ use crate::{
     errors::DatabaseError,
     types::{
         column_name::{ColumnName, write_column_list},
+        expression::{Expression, write_expression_list},
         order_by::OrderBy,
         row::Row,
         row::Rows,
@@ -27,8 +28,9 @@ pub struct NonMappable<T>
 where
     T: Entity,
 {
-    columns: Vec<ColumnName<T>>,
+    columns: Vec<Expression<T>>,
     distinct: bool,
+    group_by: Vec<ColumnName<T>>,
 }
 
 impl<T> Clone for NonMappable<T>
@@ -39,6 +41,7 @@ where
         Self {
             columns: self.columns.clone(),
             distinct: self.distinct,
+            group_by: self.group_by.clone(),
         }
     }
 }
@@ -53,6 +56,14 @@ where
     type Output;
 
     fn write_columns(&self, out: &mut String);
+
+    /// Appends ` GROUP BY ...`, if the select groups its rows.
+    fn write_group_by(&self, _out: &mut String) {}
+
+    /// Whether the select groups its rows, so counting it means counting the groups.
+    fn is_grouped(&self) -> bool {
+        false
+    }
 
     fn query(
         &self,
@@ -91,7 +102,18 @@ where
         if self.distinct {
             out.push_str("DISTINCT ");
         }
-        write_column_list(out, &self.columns);
+        write_expression_list(out, &self.columns);
+    }
+
+    fn write_group_by(&self, out: &mut String) {
+        if self.is_grouped() {
+            out.push_str(" GROUP BY ");
+            write_column_list(out, &self.group_by);
+        }
+    }
+
+    fn is_grouped(&self) -> bool {
+        !self.group_by.is_empty()
     }
 
     fn query(
@@ -99,7 +121,7 @@ where
         stmt: &mut Statement,
         params: &[&Value],
     ) -> Result<Rows, crate::rusqlite::Error> {
-        let names: Arc<[String]> = stmt.column_names().into_iter().map(String::from).collect();
+        let names: Arc<[String]> = stmt.column_names().map(String::from).collect();
         stmt.query_map(params_from_iter(params.iter().copied()), |row| {
             Row::from_row(&names, row)
         })?
@@ -186,13 +208,21 @@ where
         }
     }
 
-    fn build_sql(&self, limit: Option<u32>) -> (String, Vec<&Value>) {
+    /// `SELECT ... FROM ... [WHERE ...] [GROUP BY ...]`, with its bound parameters.
+    fn build_grouped_sql(&self) -> (String, Vec<&Value>) {
         let mut sentence = String::from("SELECT ");
         self.kind.write_columns(&mut sentence);
         let _ = write!(sentence, " FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
 
         let mut params = Vec::new();
         self.push_where(&mut sentence, &mut params);
+        self.kind.write_group_by(&mut sentence);
+
+        (sentence, params)
+    }
+
+    fn build_sql(&self, limit: Option<u32>) -> (String, Vec<&Value>) {
+        let (mut sentence, params) = self.build_grouped_sql();
 
         for (i, order) in self.order.iter().enumerate() {
             sentence.push_str(if i == 0 { " ORDER BY " } else { ", " });
@@ -228,10 +258,17 @@ where
         self.count_sync(conn)
     }
 
+    /// Matching rows, or groups if the select groups them. Ordering, limit and offset are ignored.
     fn count_sync(&self, conn: &crate::rusqlite::Connection) -> crate::errors::Result<i64> {
-        let mut sentence = format!("SELECT COUNT(*) FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
-        let mut params = Vec::new();
-        self.push_where(&mut sentence, &mut params);
+        let (sentence, params) = if self.kind.is_grouped() {
+            let (grouped, params) = self.build_grouped_sql();
+            (format!("SELECT COUNT(*) FROM ({grouped})"), params)
+        } else {
+            let mut sentence = format!("SELECT COUNT(*) FROM '{}'.'{}'", T::SCHEMA, T::TABLE_NAME);
+            let mut params = Vec::new();
+            self.push_where(&mut sentence, &mut params);
+            (sentence, params)
+        };
 
         log_query_start(&sentence, params.iter().copied());
         let total: i64 = conn
@@ -309,18 +346,42 @@ where
     }
 }
 
+/// Converts the projected items given to `columns`/`distinct`, columns or [`Expression`]s.
+fn to_expressions<T, C>(fields: &[C]) -> Vec<Expression<T>>
+where
+    T: Entity,
+    C: Into<Expression<T>> + Copy,
+{
+    fields.iter().map(|field| (*field).into()).collect()
+}
+
 impl<T> SelectBuilder<T, NonMappable<T>>
 where
     T: Entity,
 {
-    pub fn distinct(mut self, fields: &[ColumnName<T>]) -> Self {
-        self.kind.columns = fields.to_vec();
+    /// Selects `DISTINCT` the given columns or [`Expression`]s.
+    pub fn distinct<C>(mut self, fields: &[C]) -> Self
+    where
+        C: Into<Expression<T>> + Copy,
+    {
+        self.kind.columns = to_expressions(fields);
         self.kind.distinct = true;
         self
     }
 
-    pub fn columns(mut self, fields: &[ColumnName<T>]) -> Self {
-        self.kind.columns = fields.to_vec();
+    /// Selects the given columns or [`Expression`]s (aggregate functions, aliases).
+    pub fn columns<C>(mut self, fields: &[C]) -> Self
+    where
+        C: Into<Expression<T>> + Copy,
+    {
+        self.kind.columns = to_expressions(fields);
+        self
+    }
+
+    /// Groups the rows by the given columns, adding ` GROUP BY ...` after the `WHERE` clause. Pair
+    /// it with aggregate [`Expression`]s in `columns` (e.g. `.max()`, `.count()`).
+    pub fn group_by(mut self, fields: &[ColumnName<T>]) -> Self {
+        self.kind.group_by = fields.to_vec();
         self
     }
 }
@@ -329,23 +390,33 @@ impl<T> SelectBuilder<T, Mappable>
 where
     T: Entity,
 {
-    pub fn distinct(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappable<T>> {
-        self.into_non_mappeable(fields, true)
+    /// Selects `DISTINCT` the given columns or [`Expression`]s, returning [`Row`]s.
+    pub fn distinct<C>(self, fields: &[C]) -> SelectBuilder<T, NonMappable<T>>
+    where
+        C: Into<Expression<T>> + Copy,
+    {
+        self.into_non_mappeable(to_expressions(fields), true)
     }
 
-    pub fn columns(self, fields: &[ColumnName<T>]) -> SelectBuilder<T, NonMappable<T>> {
-        self.into_non_mappeable(fields, false)
+    /// Selects the given columns or [`Expression`]s (aggregate functions, aliases), returning
+    /// [`Row`]s.
+    pub fn columns<C>(self, fields: &[C]) -> SelectBuilder<T, NonMappable<T>>
+    where
+        C: Into<Expression<T>> + Copy,
+    {
+        self.into_non_mappeable(to_expressions(fields), false)
     }
 
     fn into_non_mappeable(
         self,
-        fields: &[ColumnName<T>],
+        columns: Vec<Expression<T>>,
         distinct: bool,
     ) -> SelectBuilder<T, NonMappable<T>> {
         SelectBuilder {
             kind: NonMappable {
-                columns: fields.to_vec(),
+                columns,
                 distinct,
+                group_by: Vec::new(),
             },
             condition: self.condition,
             order: self.order,
