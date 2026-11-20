@@ -169,6 +169,11 @@ fn insert_rows<T: Entity>(
             log_query_ending(item_inserted, "Inserted");
             if item_inserted > 0 {
                 let aid = conn.last_insert_rowid();
+                if !T::autoincrement_id_fits(aid) {
+                    return Err(DatabaseError::Insert(
+                        crate::rusqlite::Error::IntegralValueOutOfRange(0, aid),
+                    ));
+                }
                 debug!("Asigned autoincrement value {}", aid);
                 *id = Some(aid);
             }

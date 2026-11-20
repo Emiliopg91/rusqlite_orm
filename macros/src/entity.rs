@@ -342,10 +342,12 @@ fn parse_fields(
         }
 
         if add {
-            if is_autoincrement && f.ty.to_token_stream().to_string() != "i64" {
+            if is_autoincrement
+                && !AUTOINCREMENT_TYPES.contains(&f.ty.to_token_stream().to_string().as_str())
+            {
                 return Err(syn::Error::new_spanned(
                     f,
-                    "Only i64 fields are allowed to be autoincrement",
+                    "Only integer fields are allowed to be autoincrement",
                 ));
             }
 
@@ -389,6 +391,11 @@ fn parse_fields(
         autoincrement_field,
     })
 }
+
+/// Field types `#[autoincrement]` accepts: every integer the `i64` rowid can be cast to.
+const AUTOINCREMENT_TYPES: [&str; 10] = [
+    "i8", "i16", "i32", "i64", "isize", "u8", "u16", "u32", "u64", "usize",
+];
 
 fn validate_id_requirements(
     input: &DeriveInput,
@@ -718,14 +725,25 @@ fn build_entity_trait_impl(
         }
     };
 
-    let autoincrement_method = if let Some(autoincrement_field) = autoincrement_field {
-        let ident = &autoincrement_field.ident;
-        quote! {
-            self.#ident = id;
-        }
-    } else {
-        quote! {}
-    };
+    // The rowid is cast to the type of the field. The insert checks it fits with
+    // `autoincrement_id_fits` before handing it over, so the cast never fails here
+    let (autoincrement_method, autoincrement_check) =
+        if let Some(autoincrement_field) = &autoincrement_field {
+            let ident = &autoincrement_field.ident;
+            let ty = &autoincrement_field.ty;
+            (
+                quote! {
+                    if let Ok(id) = <#ty as ::core::convert::TryFrom<i64>>::try_from(id) {
+                        self.#ident = id;
+                    }
+                },
+                quote! {
+                    <#ty as ::core::convert::TryFrom<i64>>::try_from(id).is_ok()
+                },
+            )
+        } else {
+            (quote! {}, quote! { true })
+        };
 
     quote! {
         impl rusqlite_orm::dao::Entity for #struct_name {
@@ -768,6 +786,11 @@ fn build_entity_trait_impl(
             #[doc = "Set the autoincrement id to field"]
             fn set_autoincrement_id(&mut self, id: i64) {
                 #autoincrement_method
+            }
+
+            #[doc = "Whether the autoincrement field can hold the id"]
+            fn autoincrement_id_fits(id: i64) -> bool {
+                #autoincrement_check
             }
         }
     }

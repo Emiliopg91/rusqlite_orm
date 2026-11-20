@@ -23,6 +23,11 @@ pub trait Entity: Sized + Send + Sync + 'static {
         Ok(())
     }
     fn set_autoincrement_id(&mut self, _: i64) {}
+    /// Whether `id` fits the type of the autoincrement field; an insert assigned an id that
+    /// doesn't fails instead of writing back a truncated one.
+    fn autoincrement_id_fits(_: i64) -> bool {
+        true
+    }
 }
 
 pub trait Repository<T>: Sized + 'static
