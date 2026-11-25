@@ -1,4 +1,10 @@
-use std::{future::Future, pin::Pin};
+use std::{
+    future::Future,
+    path::Path,
+    pin::Pin,
+    sync::{Arc, RwLock},
+    time::Instant,
+};
 
 use futures_lite::future::block_on;
 use log::debug;
@@ -41,10 +47,71 @@ pub struct DdlVersion {
 /// futures): there is no runtime reactor on that thread, so e.g. tokio I/O or timers panic.
 #[derive(Clone)]
 pub struct DatabasePool {
-    pool: Pool<SqliteConnectionManager>,
+    /// `None` once [`close`](Self::close)d, for every clone.
+    pool: Arc<RwLock<Option<Pool<SqliteConnectionManager>>>>,
 }
 
 impl DatabasePool {
+    pub(crate) fn new(pool: Pool<SqliteConnectionManager>) -> Self {
+        Self {
+            pool: Arc::new(RwLock::new(Some(pool))),
+        }
+    }
+
+    /// The underlying pool, or [`DatabaseError::ClosedConnection`] once closed.
+    fn current(&self) -> Result<Pool<SqliteConnectionManager>> {
+        self.pool
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .ok_or(DatabaseError::ClosedConnection())
+    }
+
+    /// Closes the pool for this and every clone of it, closing all its connections before
+    /// returning. From then on, every method fails with [`DatabaseError::ClosedConnection`].
+    /// Closing the last connection lets SQLite checkpoint the WAL and remove the `-wal` and `-shm`
+    /// files, which a process exiting without dropping the pool (e.g. through
+    /// `std::process::exit`) would leave behind.
+    ///
+    /// Connections in use are waited for, up to the pool's connection timeout; past it, those are
+    /// closed once their current work ends. Closing twice does nothing.
+    pub async fn close(&self) {
+        let Some(pool) = self.pool.write().unwrap_or_else(|e| e.into_inner()).take() else {
+            return;
+        };
+        debug!("Closing database pool...");
+        blocking::unblock(move || {
+            // The pool opens connections in the background to keep its idle ones, and one being
+            // opened would outlive the pool. Holding as many as it can have rules that out
+            let max_size = pool.max_size() as usize;
+            let deadline = Instant::now() + pool.connection_timeout();
+            let mut held = Vec::with_capacity(max_size);
+            while held.len() < max_size {
+                match pool.get_timeout(deadline.saturating_duration_since(Instant::now())) {
+                    Ok(conn) => held.push(conn),
+                    Err(e) => {
+                        debug!("Closing the database pool with connections in use: {e}");
+                        break;
+                    }
+                }
+            }
+            // The held connections are the last references to the pool: dropping them closes
+            // every connection
+            drop(pool);
+            drop(held);
+            debug!("Database pool closed");
+        })
+        .await
+    }
+
+    /// Whether [`close`](Self::close) was called on this pool or any clone of it.
+    pub fn is_closed(&self) -> bool {
+        self.pool
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_none()
+    }
+
     /// Runs `f` inside a transaction on a pooled connection, committing it if `f` succeeds
     /// and rolling it back otherwise.
     pub async fn run_in_transaction<F, R>(&self, f: F) -> Result<R>
@@ -52,7 +119,7 @@ impl DatabasePool {
         F: AsyncFnOnce(&mut Transaction) -> TxResult<R> + Send + 'static,
         R: Send + 'static,
     {
-        let pool = self.pool.clone();
+        let pool = self.current()?;
         blocking::unblock(move || transaction_blocking(&pool, |tx| block_on(f(tx)))).await
     }
 
@@ -62,7 +129,7 @@ impl DatabasePool {
         F: AsyncFnOnce(&mut PooledConn) -> TxResult<R> + Send + 'static,
         R: Send + 'static,
     {
-        let pool = self.pool.clone();
+        let pool = self.current()?;
         blocking::unblock(move || connection_blocking(&pool, |conn| block_on(f(conn)))).await
     }
 
@@ -73,7 +140,7 @@ impl DatabasePool {
         F: FnOnce(&mut PooledConn) -> TxResult<R> + Send + 'static,
         R: Send + 'static,
     {
-        let pool = self.pool.clone();
+        let pool = self.current()?;
         blocking::unblock(move || connection_blocking(&pool, f)).await
     }
 
@@ -84,12 +151,47 @@ impl DatabasePool {
         F: FnOnce(&mut Transaction) -> TxResult<R> + Send + 'static,
         R: Send + 'static,
     {
-        let pool = self.pool.clone();
+        let pool = self.current()?;
         blocking::unblock(move || transaction_blocking(&pool, f)).await
     }
 
+    /// Rebuilds the database file, reclaiming the space of deleted data and defragmenting it. Runs
+    /// on a pooled connection outside any transaction, as SQLite requires.
+    pub async fn vacuum(&self) -> Result<()> {
+        let pool = self.current()?;
+        blocking::unblock(move || {
+            let conn = get_connection(&pool)?;
+            debug!("Running VACUUM...");
+            conn.execute_batch("VACUUM;").map_err(DatabaseError::Vacuum)
+        })
+        .await
+    }
+
+    /// Writes a compacted copy of the database to `path` (`VACUUM INTO`), leaving the database
+    /// itself untouched. The copy is a consistent snapshot even while other connections write,
+    /// and holds every committed change, those still in the WAL file included. Fails if `path`
+    /// already exists and is not empty.
+    pub async fn vacuum_into(&self, path: impl AsRef<Path>) -> Result<()> {
+        let path = path.as_ref();
+        let target = path
+            .to_str()
+            .ok_or_else(|| {
+                DatabaseError::Vacuum(crate::rusqlite::Error::InvalidPath(path.to_path_buf()))
+            })?
+            .to_string();
+        let pool = self.current()?;
+        blocking::unblock(move || {
+            let conn = get_connection(&pool)?;
+            debug!("Running VACUUM INTO '{target}'...");
+            conn.execute("VACUUM INTO ?1", [&target])
+                .map(|_| ())
+                .map_err(DatabaseError::Vacuum)
+        })
+        .await
+    }
+
     pub async fn create_schema(&self, ddls: &[DdlVersion]) -> Result<()> {
-        let pool = self.pool.clone();
+        let pool = self.current()?;
         let ddls = ddls.to_vec();
         blocking::unblock(move || create_schema_blocking(&pool, ddls)).await
     }

@@ -48,12 +48,14 @@ impl DatabaseConnectionBuilder<DatabaseInMemory> {
             busy_timeout: Duration::from_secs(10),
             foreign_keys: self.foreign_keys,
             journal_mode: JournalMode::Delete,
+            synchronous: self.synchronous,
         }
     }
 
     pub fn build(self, name: &str) -> Result<DatabasePool> {
         let foreign_keys = self.foreign_keys;
         let journal_mode = self.journal_mode.clone();
+        let synchronous = self.synchronous;
         let busy_timeout = self.busy_timeout;
         let pool_size = self.pool_size;
         let min_idle = self.min_idle;
@@ -61,7 +63,7 @@ impl DatabaseConnectionBuilder<DatabaseInMemory> {
 
         debug!("Creating connection manager...");
         let manager = SqliteConnectionManager::memory().with_init(move |conn| {
-            Self::apply_pragmas(conn, foreign_keys, &journal_mode, busy_timeout)
+            Self::apply_pragmas(conn, foreign_keys, &journal_mode, synchronous, busy_timeout)
         });
         debug!("Connection manager created");
 
