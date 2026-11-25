@@ -29,6 +29,8 @@ pub enum DatabaseError {
     Savepoint(crate::rusqlite::Error),
     #[error("Error on vacuum: {0}")]
     Vacuum(crate::rusqlite::Error),
+    #[error("Error on serialize: {0}")]
+    Serialize(crate::rusqlite::Error),
 }
 
 impl Serialize for DatabaseError {

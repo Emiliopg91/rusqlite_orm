@@ -70,6 +70,9 @@ pub struct DatabaseConnectionBuilder<L = DatabaseInMemory> {
     foreign_keys: bool,
     journal_mode: JournalMode,
     synchronous: Option<Synchronous>,
+    /// Initial contents of an in-memory database, as given by `DatabasePool::serialize`.
+    #[cfg(feature = "serialize")]
+    contents: Option<std::sync::Arc<[u8]>>,
 }
 
 impl Default for DatabaseConnectionBuilder<DatabaseInMemory> {
@@ -83,6 +86,8 @@ impl Default for DatabaseConnectionBuilder<DatabaseInMemory> {
             foreign_keys: false,
             journal_mode: JournalMode::Memory,
             synchronous: None,
+            #[cfg(feature = "serialize")]
+            contents: None,
         }
     }
 }

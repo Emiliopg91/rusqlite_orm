@@ -190,6 +190,22 @@ impl DatabasePool {
         .await
     }
 
+    /// Copies the whole database (`sqlite3_serialize`), to build in-memory databases from it with
+    /// the in-memory builder's `contents`. For a file database, the copy holds every committed
+    /// change, those still in the WAL included.
+    #[cfg(feature = "serialize")]
+    pub async fn serialize(&self) -> Result<Vec<u8>> {
+        let pool = self.current()?;
+        blocking::unblock(move || {
+            let mut conn = get_connection(&pool)?;
+            debug!("Serializing database...");
+            conn.serialize(crate::rusqlite::MAIN_DB)
+                .map(|data| data.to_vec())
+                .map_err(DatabaseError::Serialize)
+        })
+        .await
+    }
+
     pub async fn create_schema(&self, ddls: &[DdlVersion]) -> Result<()> {
         let pool = self.current()?;
         let ddls = ddls.to_vec();

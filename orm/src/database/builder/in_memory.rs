@@ -49,7 +49,18 @@ impl DatabaseConnectionBuilder<DatabaseInMemory> {
             foreign_keys: self.foreign_keys,
             journal_mode: JournalMode::Delete,
             synchronous: self.synchronous,
+            #[cfg(feature = "serialize")]
+            contents: None,
         }
+    }
+
+    /// Starts the database as a writable copy of `bytes`, a database serialized with
+    /// [`DatabasePool::serialize`], instead of empty. Building from a copy is much faster than
+    /// creating the schema again, e.g. for a fresh database per test.
+    #[cfg(feature = "serialize")]
+    pub fn contents(mut self, bytes: impl Into<std::sync::Arc<[u8]>>) -> Self {
+        self.contents = Some(bytes.into());
+        self
     }
 
     pub fn build(self, name: &str) -> Result<DatabasePool> {
@@ -62,7 +73,19 @@ impl DatabaseConnectionBuilder<DatabaseInMemory> {
         let label = ":memory:".to_string();
 
         debug!("Creating connection manager...");
+        #[cfg(feature = "serialize")]
+        let contents = self.contents.clone();
         let manager = SqliteConnectionManager::memory().with_init(move |conn| {
+            // Before the pragmas, so that they apply to the copied database
+            #[cfg(feature = "serialize")]
+            if let Some(bytes) = &contents {
+                conn.deserialize_read_exact(
+                    crate::rusqlite::MAIN_DB,
+                    &bytes[..],
+                    bytes.len(),
+                    false,
+                )?;
+            }
             Self::apply_pragmas(conn, foreign_keys, &journal_mode, synchronous, busy_timeout)
         });
         debug!("Connection manager created");

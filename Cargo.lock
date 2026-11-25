@@ -446,7 +446,7 @@ dependencies = [
 
 [[package]]
 name = "rusqlite_orm"
-version = "3.3.0"
+version = "3.4.0"
 dependencies = [
  "blocking",
  "futures-lite",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "rusqlite_orm_macros"
-version = "3.3.0"
+version = "3.4.0"
 dependencies = [
  "proc-macro2",
  "quote",
